@@ -1,0 +1,33 @@
+project:
+  id: delivery-assured
+  name: Delivery-Assured Progressive SE
+baseline_ref: refs/heads/baseline/main
+baseline_remote: origin
+slice_environment: production_like_container
+bootstrap_environment: staging
+mvp_ready_environment: staging
+ci_provider: github-actions
+
+paths:
+  contract: .agent/CONTRACT.yaml
+  state: .agent/STATE.yaml
+  slices: .agent/slices
+  acceptanceManifest: tests/acceptance/spec/manifest.yaml
+  acceptanceSpec: tests/acceptance/spec
+  acceptanceDriver: tests/acceptance/driver
+  spineManifest: tests/spine/manifest.yaml
+  verifier: ci/verifier.yaml
+  templateChecklists: ../../packages/delivery-assured/templates/checklists
+  evidenceDir: .agent/evidence
+  attemptsLog: .agent/attempts.jsonl
+
+attempt_budget:
+  same_root_cause_limit: 3
+  total_attempt_limit: 8
+  no_progress_window: 3
+  replan_limit: 2
+
+ci:
+  verify_workflow: .github/workflows/verify.yml
+  promote_workflow: .github/workflows/promote.yml
+  trusted_issuer: ci:verify

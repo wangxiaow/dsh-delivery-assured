@@ -1,0 +1,9 @@
+# 回归 Spine：已验证关键 case 的累积集合（v0.5 §13.1）
+#
+# 由 CI 在晋升时自动追加；实现 Agent 不得删除或降级任何条目。
+# 每个条目必须同时出现在受保护的 tests/acceptance/spec/manifest.yaml 中。
+#
+# 累积开始于 Baseline #0 晋升之后。
+last_updated: null
+updated_by: null
+case_ids: []

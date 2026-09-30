@@ -1,0 +1,46 @@
+# 验证配置（受保护）。Candidate 不得替换这里的命令、必需检查或晋升逻辑。
+#
+# 每个 gate 的 `command` 在本仓库根目录执行；空执行或退出码 0 都不算通过，
+# 只有真实命令的成功结果才算。`excluded: true` 必须写明理由，否则 verify 报阻塞。
+#
+# 环境变量由 CI 注入：DSH_CI_ISSUER、DSH_CI_RUN_ID、DSH_IMAGE_DIGEST、
+# DSH_CONFIG_FINGERPRINT、DSH_FIXTURE_REVISION、DSH_PROTECTED_ACCEPTANCE_DIR。
+
+revision: 1
+
+acceptance:
+  # 验收 harness 写出的结果文件；verify 会逐条比对必需 case 集合。
+  result_file: .agent/evidence/acceptance-results.json
+  harness_command: "node tests/harness/run.mjs"
+
+gates:
+  - gate: build
+    command: "node scripts/verify-build.mjs"
+    timeout_ms: 300000
+
+  - gate: clean_boot
+    # 干净状态启动：缺少必要文件必须明确失败，而不是静默成功。
+    # 命令在 Windows PowerShell 5.1 下也必须合法，所以不使用 `&&` 连接。
+    command: "node src/cli.mjs --help; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }; node scripts/check-clean-boot.mjs"
+    timeout_ms: 300000
+
+  - gate: persistence_migration
+    # 本产品为只读 CLI，无数据库、无迁移；manifest 中已声明没有任何迁移。
+    # 理由记录在这里，而不是把空执行当成通过。
+    excluded: true
+    reason: "只读 CLI 无持久化与迁移入口；migrations/ 不存在，本 gate 明确不适用（v0.5 §13.3）"
+
+  - gate: slice_acceptance
+    command: "node tests/harness/run.mjs; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }; node scripts/verify-acceptance-accounting.mjs"
+    timeout_ms: 600000
+
+  - gate: regression_spine
+    # Spine 为空时执行完整必需集合，等价于全量重验的起点。
+    command: "node scripts/verify-spine.mjs"
+    timeout_ms: 600000
+
+  - gate: deployment
+    # 本地无部署通路时明确不适用；CI 上必须真正执行并报告实际版本。
+    command: "node scripts/verify-deployment.mjs"
+    local: skip
+    timeout_ms: 300000

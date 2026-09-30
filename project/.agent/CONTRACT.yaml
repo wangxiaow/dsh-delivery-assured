@@ -1,0 +1,199 @@
+schema_version: "0.5"
+contract_version: 1
+status: approved
+product:
+  id: delivery-assured
+  intent_ref: docs/INTENT.md
+  elicitation_ref: docs/ELICITATION.md
+  project_types: [cli]
+  target_users: [solo_developer]
+  release_goal: "内部演示（自用工具）；真实上线前提另立 Contract"
+
+journeys:
+  - id: J-DELIVERY-STATUS
+    title: 开发者在一个命令里看到自己还欠什么
+    required: true
+    source_refs: ["intent:core-journeys", "elicitation:U-CLI-SCOPE", "checklist:CLI-OUTPUT"]
+    outcomes:
+      - id: J-DELIVERY-STATUS.ready
+        required: true
+        observable: 在含 Contract 的仓库内运行 delivery status 时，stdout 逐条列出每个 Required 义务及其状态与计算依据，--json 输出同一组事实；命令不写任何文件，重复执行结果一致
+    exceptional_outcomes:
+      - id: J-DELIVERY-STATUS.rejected
+        required: true
+        observable: 缺少 Contract、非法选项、未知命令或非法输入时，退出码为 2，stderr 说明缺什么，且不输出伪造的状态表
+  - id: J-CI-AUTHORITY
+    title: 只有外部 CI 能产出证据并晋升 Baseline
+    required: true
+    source_refs: ["intent:core-journeys", "elicitation:U-CI-AUTHORITY", "checklist:CLI-OBSERVABILITY"]
+    outcomes:
+      - id: J-CI-AUTHORITY.local_only
+        required: true
+        observable: 本地运行 delivery status 的任何输出都被标注为 local_diagnostic；本地无法产出 evidence、无法推进任何 baseline 引用
+    exceptional_outcomes:
+      - id: J-CI-AUTHORITY.blocked_without_ci
+        required: true
+        observable: 未取得远端权限或 CI 不可用时，报告明确阻塞而不是把本地绿灯当作完成
+
+capabilities:
+  - id: C-INPUT-DIAGNOSTICS
+    required: true
+    observable: 退出码区分 0/1/2，stderr 指出具体缺失项，stdout 与 stderr 不混用
+  - id: C-STATUS-COMPUTATION
+    required: true
+    observable: 同一仓库上，delivery status 与 scripts/coverage.mjs 对同一义务给出相同状态与依据
+  - id: C-BOOTSTRAP
+    required: true
+    observable: 生产式容器可干净启动，迁移入口可执行，staging 健康检查报告实际版本
+
+business_rules:
+  - id: BR-EVIDENCE-NOT-LOCAL
+    required: true
+    severity: critical
+    rule: 完成判定只能来自受保护 CI 的验证 job；本地运行不产出证据，也不得被任何状态派生当作通过
+    subjects: [local_cli_run, trusted_ci_verifier, promotion_job]
+    resources: [evidence_record, baseline_ref, obligation_status]
+    operations: [derive_status, issue_evidence, advance_baseline]
+    boundaries: [local_diagnostic, trusted_ci_result]
+    acceptance_requirements:
+      positive: [local_diagnostic_labeled]
+      negative: [local_pass_not_verified, untrusted_evidence_not_fresh]
+      forbidden_effects: [status_marked_verified_from_local_pass, baseline_advanced_locally]
+  - id: BR-STATUS-DERIVED
+    required: true
+    severity: critical
+    rule: 义务状态必须从 Contract、冻结验收清单与 CI 记录重新计算，不能来自 STATE 中的 DONE、任务清单或本地绿灯
+    subjects: [contract, frozen_manifest, ci_evidence, state_summary]
+    resources: [obligation_status, evidence_record]
+    operations: [derive_status]
+    boundaries: [current_revision, stale_revision]
+    acceptance_requirements:
+      positive: [status_from_contract_and_ci]
+      negative: [stale_evidence_not_verified, local_pass_not_verified]
+      forbidden_effects: [state_done_treated_as_completion]
+
+implicit_obligations:
+  - checklist_id: CLI-INPUT
+    disposition: required
+    obligation_ids: [J-DELIVERY-STATUS, J-DELIVERY-STATUS.rejected, C-INPUT-DIAGNOSTICS]
+  - checklist_id: CLI-OUTPUT
+    disposition: required
+    obligation_ids: [J-DELIVERY-STATUS, J-DELIVERY-STATUS.ready, C-INPUT-DIAGNOSTICS]
+  - checklist_id: CLI-EMPTY
+    disposition: required
+    obligation_ids: [J-DELIVERY-STATUS.ready]
+  - checklist_id: CLI-RETRY
+    disposition: required
+    obligation_ids: [J-DELIVERY-STATUS.ready]
+  - checklist_id: CLI-INTERRUPT
+    disposition: not_applicable
+    reason: 本 Slice 的命令不写任何文件，权威写入留给 CI；中断不会留下部分结果
+    approval_ref: DEC-5
+  - checklist_id: CLI-PERMISSION
+    disposition: not_applicable
+    reason: 单用户本地只读工具，无多主体与资源边界，不读取凭据
+    approval_ref: DEC-5
+  - checklist_id: CLI-CONFIG
+    disposition: required
+    obligation_ids: [J-DELIVERY-STATUS, J-DELIVERY-STATUS.rejected, C-INPUT-DIAGNOSTICS]
+  - checklist_id: CLI-DESTRUCTIVE
+    disposition: not_applicable
+    reason: 无删除、覆盖或迁移操作；写入能力明确排除在本产品范围外
+    approval_ref: DEC-5
+  - checklist_id: CLI-ENV
+    disposition: required
+    obligation_ids: [C-INPUT-DIAGNOSTICS, C-BOOTSTRAP]
+  - checklist_id: CLI-OBSERVABILITY
+    disposition: required
+    obligation_ids: [C-INPUT-DIAGNOSTICS, BR-EVIDENCE-NOT-LOCAL]
+
+unknowns:
+  - id: U-CLI-SCOPE
+    question: 首个真实项目是否就是本操作包自身的状态报告需求？
+    affects: [J-DELIVERY-STATUS]
+    impact: 无法确定首个 Slice 的业务意图
+    suggested_default: 以“我到底还欠什么”为产品意图，工具与脚本共用同一套事实
+    status: resolved
+    decision: 本仓库即首个真实项目；产品问题为用编码 Agent 交付时我到底还欠什么
+    approval_ref: DEC-1
+  - id: U-CI-AUTHORITY
+    question: 本地运行是否可以宣告完成？
+    affects: [BR-EVIDENCE-NOT-LOCAL, J-CI-AUTHORITY]
+    impact: 会把本地绿灯当成完成，破坏方案核心
+    suggested_default: 只有受保护 CI 产出证据，Promotion job 独占晋升
+    status: resolved
+    decision: 本地一律标注 local_diagnostic，权威判定留在外部 CI
+    approval_ref: DEC-2
+  - id: U-DELIVERY-BOUNDARY
+    question: 自动写入 Baseline 或 STATE 是否属于本工具范围？
+    affects: [C-INPUT-DIAGNOSTICS]
+    impact: 会把可信边界下沉到本地工具
+    suggested_default: 工具只读，晋升与证据写入留在 CI
+    status: resolved
+    decision: 工具不写任何权威状态；写入能力明确排除
+    approval_ref: DEC-3
+  - id: U-RELEASE
+    question: 本次发布目标是内部演示、邀请测试用户还是面向真实用户上线？
+    affects: [deployment]
+    impact: 决定发布前提与是否强制真实 staging
+    suggested_default: 自用工具，先达内部演示 + 真实 CI 证据
+    status: resolved
+    decision: release_goal 为内部演示；真实上线前提另立 Contract
+    approval_ref: DEC-4
+  - id: U-STAGING
+    question: 本仓库是否需要真实 staging 环境？
+    affects: [C-BOOTSTRAP, deployment]
+    impact: 无 staging 时 MVP_READY 不可达
+    suggested_default: 本 Slice 不需要；Bootstrap 阶段再评估
+    status: deferred_with_approval
+    decision: 本 Slice 不适用；Bootstrap 与 MVP 阶段需要 staging 通道
+    scope: 仅覆盖首个 Slice 的验证集合，不改变任何 Journey 的可观察结果
+    review_at: Bootstrap 结束前
+    approval_ref: DEC-6
+
+approved_assumptions:
+  - id: U-STAGING
+    decision: Bootstrap 与 MVP 阶段需要 staging 通道；首个 Slice 以 production-like 容器验证为准
+    scope: 首个 Slice 的验证环境选择
+    risk: 若最终无法取得远端权限，MVP_READY 不可达，需如实报告阻塞
+    review_at: Bootstrap 结束前
+    approval_ref: DEC-6
+
+out_of_scope:
+  - item: billing
+    reason: 自用工具本次不做收费
+    approval_ref: DEC-4
+  - item: web_ui
+    reason: 首个 Slice 只提供命令行输出，不做 Web 界面
+    approval_ref: DEC-1
+  - item: 自动晋升 Baseline 或写入权威 Evidence
+    reason: 权威判定必须留在外部 CI，工具保持只读
+    approval_ref: DEC-3
+
+deployment:
+  slice_environment: production_like_container
+  bootstrap_environment: staging
+  mvp_ready_environment: staging
+  release_target: "内部演示：本机与 CI 上可复现的只读状态报告工具"
+  mail_channel: not_applicable
+  environment_sensitive_paths: [".github/workflows/verify.yml", ".github/workflows/promote.yml", "ci/verifier.yaml"]
+  release_prerequisites:
+    - "远端仓库与 CI 权限可用，verify.yml 与 promote.yml 已生效"
+    - "refs/heads/baseline/main 由 Promotion job 建立并可读"
+    - "分支保护要求 verify 必需检查通过"
+  operational_acceptance_ids: ["A-CLI-STATUS-JSON", "A-CLI-DOES-NOT-WRITE"]
+
+acceptance:
+  manifest_ref: tests/acceptance/spec/manifest.yaml
+  protected_revision: "frozen-at-first-standard-update"
+  manual_reviews:
+    - id: R-CORE-JOURNEYS
+      obligation_ids: [J-DELIVERY-STATUS.ready, C-INPUT-DIAGNOSTICS]
+      stage: before_mvp_ready
+      reviewer: product_owner
+
+approval:
+  status: approved
+  unknowns_decision_ref: DEC-1..DEC-6（docs/ELICITATION.md 与 docs/INTENT.md 的正式澄清表）
+  acceptance_summary_ref: DEC-7（本 Contract 的验收摘要确认）
+  effective_revision: "形成受保护提交流程后由 CI 解析，不由 Agent 宣告"

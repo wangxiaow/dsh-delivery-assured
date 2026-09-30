@@ -1,0 +1,31 @@
+# 可编辑摘要。这不是通过账本，也不是证据来源。
+# coverage / resume 只把这里当作线索；任何 DONE 都不能替代 CI Evidence。
+current_slice: S1
+candidate_revision: "工作区未提交（工具不写入权威字段；真实候选由 git 解析）"
+baseline_ref: "refs/heads/baseline/main"
+last_ci_run: "无：本机没有远端仓库与 CI 权限，从未运行过真实 verify/promote"
+
+blockers:
+  - "远端仓库不存在：origin 未配置，refs/heads/baseline/* 与 refs/heads/standards/acceptance 都不存在"
+  - "无 CI 权限：.github/workflows/verify.yml 与 promote.yml 只是包内交付文件，未在任何平台上生效"
+  - "无分支保护：CODEOWNERS 与 protection 配置已写好但未应用，受保护路径目前任何人都能改"
+  - "无 Promotion 机器身份：唯一可推进 baseline 引用的凭据尚未创建"
+  - "无真实 staging：deployment 门在本地明确 not_applicable，未观测到任何真实部署版本"
+  - "因此 MVP_READY 不可达：第 15 节的条件在当前环境下无法全部满足"
+
+# 已完成、可复现的事实（不等于通过凭证）
+completed_local_work:
+  - "五个脚本：check-gaps / coverage / verify / resume / attempts，退出码 0/1/2 一致"
+  - "三份模板 + 三类清单 + AGENTS.md"
+  - "首个真实项目：Contract、8 条冻结验收用例、spec/driver 分层、Slice S1"
+  - "6 个门本地全绿：build / clean_boot / slice_acceptance / regression_spine 通过，persistence_migration 有理由地不适用，deployment 声明为 CI-only"
+  - "插件 dsh-delivery-assured：50 项检查通过，已装入 desktop profile 并在新宿主 profile 中组合成功"
+  - "晋升链路本地演练 27 项检查通过（bare 仓库模拟受保护远端）"
+
+how_decisions:
+  - "工具与五个脚本共用 scripts/lib 的同一套事实计算，避免第二份真相"
+  - "插件只读：不写 Evidence、不推进 baseline、不宣告 MVP_READY；本地一律标为 local_diagnostic"
+  - "受保护标准 revision 已冻结为 frozen-by-standards-update-job；此后 spec/ 必须与之逐字节一致"
+  - "deployment 门在 promote 工具中为必需，缺少真实部署标识即阻塞晋升"
+
+next_action: "取得远端仓库与 CI 权限后：推送候选 → 运行 verify.yml 取得首个版本绑定 Evidence → 由 promote.yml 检查预期父引用并晋升 Baseline #0 → 再评估 staging 与 MVP_READY"

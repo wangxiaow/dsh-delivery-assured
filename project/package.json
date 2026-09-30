@@ -1,0 +1,29 @@
+{
+  "name": "delivery-assured",
+  "version": "0.5.0",
+  "private": true,
+  "description": "Delivery-Assured Progressive SE operation pack and its first real project: a read-only report of what a delivery still owes.",
+  "type": "module",
+  "license": "MIT",
+  "author": "wangxiaow",
+  "engines": {
+    "node": ">=20"
+  },
+  "bin": {
+    "delivery": "./src/cli.mjs"
+  },
+  "scripts": {
+    "status": "node src/cli.mjs status",
+    "status:json": "node src/cli.mjs status --json",
+    "check:contract": "node ../../packages/delivery-assured/scripts/check-gaps.mjs --phase contract",
+    "check:acceptance": "node ../../packages/delivery-assured/scripts/check-gaps.mjs --phase acceptance",
+    "check:slice": "node ../../packages/delivery-assured/scripts/check-gaps.mjs --phase slice --slice S1",
+    "coverage": "node ../../packages/delivery-assured/scripts/coverage.mjs --view mvp",
+    "coverage:slice": "node ../../packages/delivery-assured/scripts/coverage.mjs --view slice",
+    "resume": "node ../../packages/delivery-assured/scripts/resume.mjs",
+    "attempts": "node ../../packages/delivery-assured/scripts/attempts.mjs",
+    "acceptance": "node tests/harness/run.mjs",
+    "verify:local": "node ../../packages/delivery-assured/scripts/verify.mjs --local"
+  },
+  "dependencies": {}
+}

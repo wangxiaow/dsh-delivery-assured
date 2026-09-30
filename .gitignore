@@ -1,0 +1,69 @@
+# 运行期产物：由本地脚本与 CI 生成，不是源码。
+#
+# 为什么不能入库：
+#   - 捕获的输出会带上本机绝对路径与用户名（临时目录、用户主目录）；
+#   - 一次失败运行的记录留在仓库里，会被后来的读者当成当前状态；
+#   - 这些文件每次都重新生成，纳入版本控制只会制造噪声与泄漏面。
+#
+# 受保护的标准与 Baseline 元数据必须入库，因此下面有明确的例外。
+
+# 验证与验收的输出
+.agent/evidence/
+**/.agent/evidence/
+ci/reports/
+ci/evidence/
+
+# 部署门产出的交付物：它是 src/ 与包内脚本的副本，外加一份每次构建都变的摘要。
+# 入库等于把同一份代码存两遍，还让每个候选都产生一个 diff。
+**/.agent/artifact/
+
+# 预算记录（每次尝试都追加）
+.agent/attempts.jsonl
+
+# 例外：Baseline 元数据是权威记录，必须保留
+!ci/baseline/
+!ci/baseline/*.json
+
+# 本地证据目录：仅保留占位，不保留内容
+!**/.agent/evidence/.gitkeep
+
+# 依赖与构建产物
+node_modules/
+.pnpm-store/
+dist/
+build/
+*.tsbuildinfo
+
+# 临时与探测脚本
+tmp-*.mjs
+probe-*.mjs
+probe-*.yaml
+*-instrumented.mjs
+newblock.txt
+statusblock.txt
+
+# 编辑器与操作系统
+.vscode/
+.idea/
+*.swp
+*~
+.DS_Store
+Thumbs.db
+
+# 本地环境与凭据（不应出现，但兜底）
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+.npmrc
+.netrc
+credentials.*
+.credentials*
+settings.yaml
+
+# 日志
+*.log
+logs/

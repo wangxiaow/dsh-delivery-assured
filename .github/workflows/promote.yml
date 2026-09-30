@@ -1,0 +1,119 @@
+# 串行晋升工作流（v0.5 §11.2、§12、§16.4）。
+#
+# 两个受限入口，职责与可修改的引用严格分开：
+#
+#   standards-update  只接受“纯追加”的标准变更（新增 case 与 manifest 条目），
+#                     自动冻结新的受保护验收版本。修改/删除/降标一律退出自动通路。
+#     └─ 不持有推进 refs/heads/baseline/* 的凭据。
+#
+#   promote-baseline  消费已完成、来源可确认、绑定匹配的 Evidence，
+#                     检查预期父引用后串行推进 refs/heads/baseline/*。
+#     └─ 唯一持有晋升凭据的 job。不执行任何 Candidate 脚本。
+
+name: promote
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: standards-update 或 promote-baseline
+        required: true
+        type: choice
+        options:
+          - promote-baseline
+          - standards-update
+      verify_run_id:
+        description: 已完成的 verify 运行 id（仅 promote-baseline）
+        required: false
+      expected_parent:
+        description: 期望的父 Baseline ID，例如 BL-000；首次留空
+        required: false
+
+permissions:
+  contents: read
+
+concurrency:
+  # 晋升串行化：同一时间只允许一个 Promotion job。
+  group: promote-baseline
+  cancel-in-progress: false
+
+jobs:
+  standards-update:
+    if: github.event.inputs.mode == 'standards-update'
+    name: freeze an append-only standard update
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      - name: Reject anything that is not a pure append
+        run: |
+          set -euo pipefail
+          node ci/tools/ci-standards-diff.mjs \
+            --repo . \
+            --old-ref "refs/heads/standards/acceptance" \
+            --new-ref "${GITHUB_SHA}"
+
+      - name: Freeze the new protected acceptance revision
+        run: |
+          set -euo pipefail
+          git push --force-with-lease origin "${GITHUB_SHA}:refs/heads/standards/acceptance"
+
+      - name: Record the freeze
+        run: |
+          echo "froze refs/heads/standards/acceptance at ${GITHUB_SHA}" >> "$GITHUB_STEP_SUMMARY"
+
+  promote-baseline:
+    if: github.event.inputs.mode == 'promote-baseline'
+    name: promote a verified candidate
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      actions: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      - name: Download the completed verification evidence
+        uses: actions/download-artifact@v4
+        with:
+          name: verify-report-${{ github.event.inputs.verify_run_id }}-1
+          path: evidence
+
+      - name: Check the promotion preconditions
+        run: |
+          set -euo pipefail
+          node ci/tools/ci-promote.mjs \
+            --project . \
+            --evidence-dir evidence \
+            --expected-parent "${{ github.event.inputs.expected_parent }}" \
+            --protected-baseline-ref refs/heads/baseline/main \
+            --dry-run
+
+      - name: Persist Evidence and the pending baseline metadata, then advance the ref
+        run: |
+          set -euo pipefail
+          # 顺序即是契约：先持久保存证据与元数据，再以预期父引用做条件更新，
+          # 最后记录晋升成功。任何一步失败都不产生“已完成”的派生状态。
+          node ci/tools/ci-promote.mjs \
+            --project . \
+            --evidence-dir evidence \
+            --expected-parent "${{ github.event.inputs.expected_parent }}" \
+            --protected-baseline-ref refs/heads/baseline/main \
+            --apply
+
+      - name: Report the promotion
+        run: |
+          echo "promotion run ${{ github.run_id }} completed; baseline metadata is in ci/baseline/" >> "$GITHUB_STEP_SUMMARY"

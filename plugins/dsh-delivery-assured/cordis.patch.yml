@@ -1,0 +1,10 @@
+# dsh bundle patch: inserts this plugin into a profile's layer stack.
+#
+# Config keys (all optional; each also has an environment fallback):
+#   packRoot     directory containing scripts/resume.mjs   (DSH_DELIVERY_PACK)
+#   projectRoot  the delivery repository to inspect        (DSH_DELIVERY_PROJECT)
+#   nodeBin      Node executable to run the scripts with   (DSH_DELIVERY_NODE)
+#   workspace    fallback working directory for discovery
+- insert:
+    - id: delivery-assured
+      name: 'dsh-delivery-assured'

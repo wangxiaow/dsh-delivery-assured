@@ -1,0 +1,172 @@
+# 受保护的验证工作流（v0.5 §12、§16.4）。
+#
+# 关键性质：
+#   1. 本文件来自受保护的标准版本，Candidate 不能用自己仓库里的同名文件替换它。
+#   2. 验收 spec 与 manifest 从受保护来源加载，Candidate 的 tests/acceptance/spec/
+#      只被比较，不被信任。
+#   3. 只有本 job 产出 evidence.json。实现 Agent 不得写入权威结果。
+#   4. 运行 Candidate 的 job 不持有推进 refs/heads/baseline/* 的凭据。
+
+name: verify
+
+# 触发方式刻意只有两种：
+#
+#   pull_request  让分支保护能要求这两个检查，并拒绝未验证的合并。
+#   workflow_dispatch  对**固定候选**发起验证，输入显式给出切片与父 Baseline。
+#
+# 刻意没有 `push` 触发：验证的对象是一个冻结候选加一组明确输入，而不是“某个分支
+# 刚被推了一次”。带 push 触发会让每次推送都用一个占位 slice（`auto`）跑起来，
+# 产出注定失败的运行，把 Actions 记录变成噪声——那不叫持续集成，叫持续误报。
+on:
+  workflow_dispatch:
+    inputs:
+      candidate_ref:
+        description: 要验证的候选 ref（分支名或 commit）
+        required: true
+      parent_baseline:
+        description: 期望的父 Baseline ID（BL-n）；首次留空
+        required: false
+      slice_id:
+        description: 本次 Slice ID
+        required: true
+        default: S1
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: verify-${{ github.event.inputs.candidate_ref || github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    name: verify candidate
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      DSH_CI_ISSUER: ci:verify
+      DSH_CI_RUN_ID: ${{ github.run_id }}-${{ github.run_attempt }}
+      DSH_CANDIDATE_REF: ${{ github.event.inputs.candidate_ref || github.ref }}
+      DSH_PARENT_BASELINE: ${{ github.event.inputs.parent_baseline || 'none' }}
+      DSH_SLICE_ID: ${{ github.event.inputs.slice_id || 'auto' }}
+      # 受保护标准版本：验收 spec 与 manifest 的权威来源。
+      DSH_PROTECTED_REF: refs/heads/standards/acceptance
+
+    steps:
+      - name: Checkout the canonical verifier revision
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          fetch-depth: 0
+          path: canonical
+
+      - name: Fetch the frozen candidate
+        working-directory: canonical
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin "${DSH_CANDIDATE_REF}"
+          CANDIDATE_SHA="$(git rev-parse FETCH_HEAD)"
+          echo "DSH_CANDIDATE=${CANDIDATE_SHA}" >> "$GITHUB_ENV"
+          echo "candidate=${CANDIDATE_SHA}"
+
+      - name: Fetch the protected acceptance standard
+        working-directory: canonical
+        run: |
+          set -euo pipefail
+          if git fetch --no-tags origin "${DSH_PROTECTED_REF}"; then
+            PROTECTED_SHA="$(git rev-parse FETCH_HEAD)"
+            mkdir -p ../protected
+            git archive FETCH_HEAD tests/acceptance/spec | tar -x -C ../protected
+            echo "DSH_PROTECTED_ACCEPTANCE_DIR=../protected/tests/acceptance/spec" >> "$GITHUB_ENV"
+            echo "protected=${PROTECTED_SHA}"
+          else
+            echo "no protected acceptance ref yet: the first run freezes it" >&2
+            echo "DSH_PROTECTED_ACCEPTANCE_DIR=" >> "$GITHUB_ENV"
+          fi
+
+      - name: Check out the candidate working tree
+        working-directory: canonical
+        run: |
+          set -euo pipefail
+          git worktree add --detach ../candidate "${DSH_CANDIDATE}"
+          # The verifier and the verifier config always come from the canonical
+          # revision, never from the candidate.
+          rm -rf ../candidate/ci
+          cp -r ci ../candidate/ci
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      - name: Structural checks (spec diff and driver scan)
+        working-directory: candidate
+        run: |
+          set -euo pipefail
+          node ../ci/tools/ci-spec-diff.mjs \
+            --repo . \
+            --candidate-ref "${DSH_CANDIDATE}" \
+            --protected-ref "${DSH_PROTECTED_REF}"
+
+      - name: Run the 5+1 gates and write evidence
+        working-directory: candidate
+        run: |
+          set -euo pipefail
+          node ../packages/delivery-assured/scripts/verify.mjs \
+            --project . \
+            --candidate "${DSH_CANDIDATE}" \
+            --parent-baseline "${DSH_PARENT_BASELINE}" \
+            --slice "${DSH_SLICE_ID}" \
+            --ci-run-id "${DSH_CI_RUN_ID}" \
+            --write-evidence \
+            --out-dir .agent/evidence
+
+      # 部署门需要“观测值”而不是“注入值”。这一步产出实际交付物并报告它真实的
+      # revision 与 digest，部署门才有可证伪性，而不是把输入回显一遍。
+      - name: Produce the deployable artifact
+        working-directory: candidate
+        run: |
+          set -euo pipefail
+          node ../ci/tools/verify-artifact.mjs --project . >> "$GITHUB_ENV"
+          cat .agent/artifact/delivery-assured/ARTIFACT.json
+
+      - name: Retain the full report (success and failure alike)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: verify-report-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            candidate/.agent/evidence/**
+            candidate/.agent/artifact/**
+          if-no-files-found: warn
+          retention-days: 90
+
+  # 结构检查使用独立 job，避免 Candidate 的任意代码在验证 job 中先执行。
+  structural:
+    name: structural checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout the canonical revision
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          fetch-depth: 0
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      - name: Verify spec/ is byte-identical to the protected standard
+        run: |
+          set -euo pipefail
+          node ci/tools/ci-spec-diff.mjs \
+            --repo . \
+            --candidate-ref "${DSH_CANDIDATE_REF}" \
+            --protected-ref "${DSH_PROTECTED_REF}"
+        env:
+          DSH_CANDIDATE_REF: ${{ github.event.inputs.candidate_ref || github.ref }}
+          DSH_PROTECTED_REF: refs/heads/standards/acceptance

@@ -1,0 +1,169 @@
+#!/usr/bin/env node
+/**
+ * coverage — recompute the obligation → Slice → Acceptance → evidence mapping.
+ *
+ * Two views, per v0.5 §6.2:
+ *   --view slice   what the current Slice plus existing Spine must prove now
+ *   --view mvp     whether the whole Contract is closed
+ *
+ * Coverage is always recomputed from the Contract; it never trusts a task list,
+ * a `DONE` marker in `.agent/STATE.yaml`, or a local PASS. Required obligations
+ * cannot disappear because a task file was deleted.
+ *
+ * Exit codes: 0 nothing blocking for the requested view, 1 blocking gap, 2 input error.
+ */
+
+import { EXIT, InputError, abs, findProjectRoot, finish, gitRevision, parseArgs, rel } from './lib/common.mjs'
+import { blockingForView, collectCriticalViolations, coverageRows } from './lib/coverage-core.mjs'
+import { loadModel, scanDriverForAssertions, specDiffAgainstProtected } from './lib/model.mjs'
+
+function main() {
+  const opts = parseArgs(process.argv.slice(2), {
+    view: 'value',
+    project: 'value',
+    slice: 'value',
+    candidate: 'value',
+    json: 'boolean',
+    quiet: 'boolean',
+    all: 'boolean',
+  })
+  if (opts.help) {
+    process.stdout.write('coverage — recomputed obligation coverage (--view slice|mvp)\n')
+    return EXIT.PASS
+  }
+  const view = opts.view || 'slice'
+  if (!['slice', 'mvp'].includes(view)) throw new InputError(`--view must be slice or mvp (got ${view})`)
+
+  const root = findProjectRoot(opts.project)
+  const model = loadModel(root)
+  const candidate = opts.candidate || gitRevision(root, 'HEAD')
+  const trustedIssuer = model.cfg.ci?.trusted_issuer || null
+  const localBaseline = model.baselines.length > 0 ? model.baselines[model.baselines.length - 1] : null
+  const parentBaseline = localBaseline?.baseline_id || null
+
+  const { rows, buckets, gapClasses } = coverageRows(model, {
+    candidate,
+    parentBaseline,
+    trustedIssuer,
+    includeOptional: opts.all === true,
+  })
+
+  const driverFindings = scanDriverForAssertions(root)
+  const specDiff = specDiffProtected(root)
+  const criticalViolations = collectCriticalViolations(model, { codeRevision: candidate, parentBaseline, trustedIssuer })
+  const blocking = blockingForView(buckets, view)
+
+  const sliceRows = currentSliceRows(model, opts.slice)
+  const code = blocking.length > 0 || criticalViolations.length > 0 || specDiff.diffs.length > 0 || driverFindings.length > 0
+    ? EXIT.FAIL
+    : EXIT.PASS
+
+  const human = []
+  human.push(`view: ${view}   candidate: ${candidate ? candidate.slice(0, 12) : '(no git revision)'}   parent baseline: ${parentBaseline || '(none)'}`)
+  human.push('')
+  human.push('obligation                        kind       slice(s)      acceptance                  status')
+  human.push('-'.repeat(118))
+  for (const row of rows) {
+    human.push(
+      [
+        row.id.padEnd(33),
+        row.kind.padEnd(10),
+        (row.slices.join(',') || '-').slice(0, 13).padEnd(13),
+        (row.acceptance.join(',') || row.manual_reviews.join(',') || '-').slice(0, 27).padEnd(27),
+        row.status,
+      ].join(' '),
+    )
+  }
+  human.push('')
+  human.push(
+    `verified ${buckets.verified.length} | pending_implementation ${buckets.pending_implementation.length} | ` +
+      `unmapped ${buckets.unmapped.length} | standard_gap ${buckets.standard_gap.length} | ` +
+      `current_failure ${buckets.current_failure.length} | stale_evidence ${buckets.stale_evidence.length} | ` +
+      `review_pending ${buckets.review_pending.length}`,
+  )
+  human.push('')
+  human.push('gap classes (v0.5 §6.3):')
+  human.push(`  discovery / standard        ${gapClasses.discovery_or_standard.join(', ') || '-'}`)
+  human.push(`  execution                   ${gapClasses.execution.join(', ') || '-'}`)
+  human.push(`  regression / environment    ${gapClasses.regression_or_environment.join(', ') || '-'}`)
+  if (criticalViolations.length > 0) {
+    human.push('')
+    human.push('CRITICAL rules without a current pass (these block promotion immediately):')
+    for (const violation of criticalViolations) human.push(`  BLOCK ${violation.rule}: ${violation.message}`)
+  }
+  if (specDiff.available && specDiff.diffs.length > 0) {
+    human.push('')
+    human.push('spec/ differs from the protected acceptance revision:')
+    for (const diff of specDiff.diffs) human.push(`  BLOCK ${diff.kind}: ${diff.path}`)
+  }
+  if (driverFindings.length > 0) {
+    human.push('')
+    human.push('driver/ contains assertion syntax or assertion-library imports (syntax/import scan only):')
+    for (const finding of driverFindings) human.push(`  BLOCK ${finding.file}:${finding.line} ${finding.match}`)
+  }
+  if (sliceRows.length > 0) {
+    human.push('')
+    human.push(
+      `current slice ${opts.slice || sliceRows.map((s) => s.id).join(', ')} claims: ${sliceRows.flatMap((s) => s.acceptance || []).join(', ') || '(none)'}`,
+    )
+  }
+  human.push('')
+  human.push('note: STATE.yaml DONE was not consulted; statuses come from the Contract, the frozen manifest and CI records.')
+
+  return finish({
+    code,
+    script: 'coverage',
+    summary:
+      blocking.length === 0 && criticalViolations.length === 0
+        ? `view ${view}: no blocking coverage gap (${buckets.review_pending.length} manual item(s) pending)`
+        : `view ${view}: ${blocking.length} blocking obligation(s), ${criticalViolations.length} critical rule(s) without a current pass`,
+    human,
+    json: {
+      view,
+      project: root,
+      candidate,
+      parent_baseline: parentBaseline,
+      rows,
+      buckets,
+      gap_classes: gapClasses,
+      critical_violations: criticalViolations,
+      spec_diff: specDiff,
+      driver_findings: driverFindings,
+      blocking,
+    },
+    color: !opts.quiet,
+    jsonRequested: opts.json === true,
+  })
+}
+
+function currentSliceRows(model, sliceId) {
+  if (sliceId) return model.slices.filter((s) => s.id === sliceId)
+  const stateSlice = model.state?.current_slice
+  return model.slices.filter(
+    (s) => s.status && !['VERIFIED_DONE', 'BLOCKED'].includes(String(s.status)) && (!stateSlice || s.id === stateSlice),
+  )
+}
+
+function specDiffProtected(root) {
+  const protectedDir = process.env.DSH_PROTECTED_ACCEPTANCE_DIR
+  if (!protectedDir) {
+    return {
+      available: false,
+      reason: 'DSH_PROTECTED_ACCEPTANCE_DIR is not set; the CI job performs this check against the protected revision',
+      diffs: [],
+    }
+  }
+  return specDiffAgainstProtected(root, abs(root, protectedDir))
+}
+
+try {
+  process.exitCode = main()
+} catch (error) {
+  if (error instanceof InputError) {
+    process.stderr.write(`coverage: ${error.message}\n`)
+    process.exitCode = EXIT.ERROR
+  } else {
+    process.stderr.write(`coverage: unexpected error: ${error?.stack || error}\n`)
+    process.exitCode = EXIT.ERROR
+  }
+}

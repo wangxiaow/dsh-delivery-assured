@@ -1,0 +1,22 @@
+# 受保护路径的责任边界（v0.5 §12）。
+#
+# 这不是门禁本身。单独一个 CODEOWNERS 文件不构成保护：它必须配合平台的
+# 必需审批、必需状态检查、分支权限与不可绕过规则才生效。具体生效步骤见
+# ci/protection/README.md，未完成时按“保护未生效”处理。
+
+# 交付标准：只能由标准更新通路的机器身份或 owner 变更
+/.agent/CONTRACT.yaml            @OWNER
+/.agent/project.yaml             @OWNER
+/tests/acceptance/spec/          @OWNER
+/tests/spine/manifest.yaml       @OWNER
+/ci/verifier.yaml                @OWNER
+/ci/verify.yml                   @OWNER
+/ci/promote.yml                  @OWNER
+/.github/workflows/               @OWNER
+
+# 晋升凭据与元数据
+/ci/baseline/                    @OWNER
+
+# 业务代码与 driver：实现会话可以修改
+/src/                            @OWNER
+/tests/acceptance/driver/        @OWNER

@@ -1,0 +1,24 @@
+# 统一行尾与文本处理。没有这个文件时，Windows 上 core.autocrlf=true 的检出会得到
+# CRLF，而 CI 跑在 Linux 上得到 LF——同一份文件在不同机器上内容不同。
+# 这个仓库的可执行文件与文档都以 LF 为准（见 tools/markdown-structure.test.mjs）。
+
+* text=auto eol=lf
+
+# 明确声明为文本并强制 LF
+*.md   text eol=lf
+*.mjs  text eol=lf
+*.js   text eol=lf
+*.json text eol=lf
+*.yml  text eol=lf
+*.yaml text eol=lf
+
+# 无扩展名但与行尾有关的文件
+CODEOWNERS text eol=lf
+LICENSE    text eol=lf
+
+# 二进制文件不做任何转换
+*.png  binary
+*.jpg  binary
+*.ico  binary
+*.pdf  binary
+*.zip  binary

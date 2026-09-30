@@ -1,0 +1,118 @@
+revision: 1
+# 受保护流程解析出的验收标准版本。由标准更新通路冻结，不由实现会话填写；冻结后
+# Candidate 的 spec/ 必须与之逐字节一致（见 ci/tools/ci-spec-diff.mjs 与 verify 的结构检查）。
+protected_revision: "frozen-by-standards-update-job"
+cases:
+  - id: A-CLI-STATUS-JSON
+    obligation_ids: [J-DELIVERY-STATUS, C-STATUS-COMPUTATION]
+    outcome_ids: [J-DELIVERY-STATUS.ready]
+    required: true
+    method: automated
+    actors: [solo_developer]
+    preconditions: [repository_with_contract, clean_workspace]
+    action: run_delivery_status_with_json
+    assertions: [status_from_contract_and_ci, local_diagnostic_labeled]
+    critical_scenarios: [status_from_contract_and_ci]
+    environments: [production_like_container, staging]
+    spec_ref: tests/acceptance/spec/status-json.spec.mjs
+  - id: A-CLI-INPUT-REJECTED
+    obligation_ids: [J-DELIVERY-STATUS, J-DELIVERY-STATUS.rejected, C-INPUT-DIAGNOSTICS]
+    outcome_ids: [J-DELIVERY-STATUS.rejected]
+    required: true
+    method: automated
+    actors: [solo_developer]
+    preconditions: [repository_without_contract, invalid_arguments]
+    action: run_delivery_status_with_illegal_input
+    assertions: [no_silent_pass, exit_code_two_with_diagnostic]
+    critical_scenarios: [no_silent_pass]
+    environments: [production_like_container]
+    spec_ref: tests/acceptance/spec/input-rejected.spec.mjs
+  - id: A-CLI-STALE-EVIDENCE
+    obligation_ids: [BR-STATUS-DERIVED]
+    outcome_ids: [J-DELIVERY-STATUS.ready]
+    required: true
+    method: automated
+    actors: [solo_developer]
+    preconditions: [evidence_with_mismatched_bindings]
+    action: run_delivery_status_over_stale_evidence
+    assertions: [stale_evidence_not_verified, local_pass_not_verified]
+    critical_scenarios: [stale_evidence_not_verified, local_pass_not_verified]
+    environments: [production_like_container]
+    spec_ref: tests/acceptance/spec/stale-evidence.spec.mjs
+  - id: A-CLI-DOES-NOT-WRITE
+    obligation_ids: [J-DELIVERY-STATUS, C-INPUT-DIAGNOSTICS]
+    outcome_ids: [J-DELIVERY-STATUS.ready]
+    required: true
+    method: automated
+    actors: [solo_developer]
+    preconditions: [repository_with_contract]
+    action: run_delivery_status_and_compare_filesystem
+    assertions: [local_diagnostic_labeled, baseline_advanced_locally]
+    critical_scenarios: [baseline_advanced_locally]
+    environments: [production_like_container]
+    spec_ref: tests/acceptance/spec/does-not-write.spec.mjs
+  - id: A-CLI-CRITICAL-NOT-LOCAL-PASS
+    obligation_ids: [BR-EVIDENCE-NOT-LOCAL, J-CI-AUTHORITY, J-CI-AUTHORITY.local_only]
+    outcome_ids: [J-CI-AUTHORITY.local_only]
+    required: true
+    method: automated
+    actors: [solo_developer, trusted_ci_verifier]
+    preconditions: [no_evidence, untrusted_evidence, state_summary_only]
+    action: run_delivery_status_and_inspect_critical_rule
+    assertions:
+      - local_diagnostic_labeled
+      - status_marked_verified_from_local_pass
+      - untrusted_evidence_not_fresh
+      - baseline_advanced_locally
+      - local_pass_not_verified
+      - state_done_treated_as_completion
+    critical_scenarios:
+      - local_diagnostic_labeled
+      - status_marked_verified_from_local_pass
+      - untrusted_evidence_not_fresh
+      - baseline_advanced_locally
+      - local_pass_not_verified
+      - state_done_treated_as_completion
+    environments: [production_like_container, staging]
+    spec_ref: tests/acceptance/spec/critical-not-local-pass.spec.mjs
+  - id: A-CLI-BLOCKED-WITHOUT-CI
+    obligation_ids: [J-CI-AUTHORITY, J-CI-AUTHORITY.blocked_without_ci, BR-EVIDENCE-NOT-LOCAL]
+    outcome_ids: [J-CI-AUTHORITY.blocked_without_ci]
+    required: true
+    method: automated
+    actors: [solo_developer]
+    preconditions: [no_trusted_record, no_release_prerequisites]
+    action: run_delivery_status_without_any_ci_record
+    assertions: [blocked_without_ci, local_pass_not_verified, untrusted_evidence_not_fresh]
+    critical_scenarios: [blocked_without_ci, local_pass_not_verified]
+    environments: [production_like_container]
+    spec_ref: tests/acceptance/spec/critical-not-local-pass.spec.mjs
+  - id: A-CLI-STATE-DONE-NOT-COMPLETION
+    obligation_ids: [BR-STATUS-DERIVED, J-DELIVERY-STATUS]
+    outcome_ids: [J-DELIVERY-STATUS.ready]
+    required: true
+    method: automated
+    actors: [solo_developer]
+    preconditions: [state_summary_claims_completion]
+    action: run_delivery_status_with_and_without_state_summary
+    assertions:
+      - status_from_contract_and_ci
+      - state_done_treated_as_completion
+      - stale_evidence_not_verified
+    critical_scenarios:
+      - status_from_contract_and_ci
+      - state_done_treated_as_completion
+    environments: [production_like_container]
+    spec_ref: tests/acceptance/spec/does-not-write.spec.mjs
+  - id: A-BOOTSTRAP-CLEAN-BOOT
+    obligation_ids: [C-BOOTSTRAP, C-INPUT-DIAGNOSTICS]
+    outcome_ids: [J-DELIVERY-STATUS.ready]
+    required: true
+    method: automated
+    actors: [solo_developer]
+    preconditions: [clean_target_directory, no_developer_residue]
+    action: start_the_tool_from_a_clean_target
+    assertions: [no_silent_pass, exit_code_two_with_diagnostic, local_diagnostic_labeled]
+    critical_scenarios: [no_silent_pass]
+    environments: [production_like_container, staging]
+    spec_ref: tests/acceptance/spec/input-rejected.spec.mjs

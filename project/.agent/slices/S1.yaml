@@ -1,0 +1,41 @@
+id: S1
+title: delivery status 只读报告——列出每个 Required 义务的当前状态与依据
+status: LOCAL_VERIFY
+obligations:
+  - J-DELIVERY-STATUS
+  - C-INPUT-DIAGNOSTICS
+  - C-STATUS-COMPUTATION
+  - BR-EVIDENCE-NOT-LOCAL
+  - BR-STATUS-DERIVED
+outcomes:
+  - J-DELIVERY-STATUS.ready
+  - J-DELIVERY-STATUS.rejected
+  - J-CI-AUTHORITY.local_only
+acceptance:
+  - A-CLI-STATUS-JSON
+  - A-CLI-INPUT-REJECTED
+  - A-CLI-STALE-EVIDENCE
+  - A-CLI-DOES-NOT-WRITE
+  - A-CLI-CRITICAL-NOT-LOCAL-PASS
+  - A-CLI-BLOCKED-WITHOUT-CI
+  - A-CLI-STATE-DONE-NOT-COMPLETION
+  - A-BOOTSTRAP-CLEAN-BOOT
+depends_on: []
+baseline: "Baseline #0（Bootstrap）——本 Slice 是首个业务 Slice"
+preserve:
+  - 五个脚本的退出码约定 0/1/2
+  - scripts/coverage.mjs 与 delivery status 对同一义务给出相同状态
+  - 权威边界：本地不产出 Evidence，不推进 baseline 引用
+code_conventions:
+  - "数据访问：只读读取 .agent/ 与 tests/ 下的 YAML/JSON，不写任何状态文件"
+  - "身份与授权：无身份系统；不读取凭据；不信任 STATE 中的 DONE"
+  - "错误处理：InputError → stderr + 退出码 2；发现阻塞 → 退出码 1"
+  - "目录与模块：src/cli.mjs 只做参数分发，命令实现放 src/commands/"
+  - "共享抽象：全部事实计算复用 scripts/lib，禁止在 src 内复制解析逻辑"
+attempt_budget:
+  same_root_cause_limit: 3
+  total_attempt_limit: 8
+  no_progress_window: 3
+  replan_limit: 2
+migration_steps: []
+external_side_effects: []
