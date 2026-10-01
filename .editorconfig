@@ -1,0 +1,31 @@
+# 编辑器侧的行尾与编码约定，与 .gitattributes 保持一致。
+#
+# 这个仓库以 LF 为准。没有这层约定时，Windows 上的编辑器会把改动写回 CRLF，
+# 于是同一份文件在不同平台内容不同——CI 跑在 Linux 上，本地跑在 Windows 上，
+# 而 tools/markdown-structure.test.mjs 这类按行解析的检查会得出不同结论。
+
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true
+indent_style = space
+indent_size = 2
+
+[*.md]
+# 行尾空格在 Markdown 里是硬换行，不能自动删除。
+trim_trailing_whitespace = false
+
+[*.{yml,yaml}]
+indent_size = 2
+
+[*.json]
+indent_size = 2
+
+[*.{png,jpg,jpeg,ico,pdf,zip,webp}]
+# 二进制文件不做任何转换
+end_of_line = unset
+insert_final_newline = unset
+trim_trailing_whitespace = unset

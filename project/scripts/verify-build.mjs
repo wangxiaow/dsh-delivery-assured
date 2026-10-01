@@ -58,13 +58,22 @@ if (yamlTests.status !== 0) {
 // Either way a reader can tell "passed" from "could not run here".
 const pluginRoot = join(repoRoot, 'plugins', 'dsh-delivery-assured')
 const pluginTests = [
-  { label: 'plugin smoke', file: join(pluginRoot, 'test', 'smoke.mjs'), requiresDsh: false },
-  { label: 'plugin skill-registry contract', file: join(pluginRoot, 'test', 'skill-registry.test.mjs'), requiresDsh: true },
+  { label: 'plugin smoke', file: join(pluginRoot, 'test', 'smoke.mjs'), requires: 'none' },
+  { label: 'plugin skill-registry contract', file: join(pluginRoot, 'test', 'skill-registry.test.mjs'), requires: 'dsh-packages' },
+  // This is the only suite that can catch "the plugin no longer loads". The other two
+  // use their own tool builder and shell double, so they once passed while the plugin
+  // was in fact unloadable. It needs a real runtime — the desktop payload counts.
+  { label: 'plugin runtime contract', file: join(pluginRoot, 'test', 'compatibility.test.mjs'), requires: 'dsh-runtime' },
   // The workflows cannot run without a remote, so a wrong `node <path>` inside them
   // would otherwise stay invisible until the first push. This check runs here.
-  { label: 'CI preflight', file: join(repoRoot, 'tools', 'ci-preflight.test.mjs'), requiresDsh: false },
+  { label: 'CI preflight', file: join(repoRoot, 'tools', 'ci-preflight.test.mjs'), requires: 'none' },
 ]
-const dshPackagesPresent = existsSync(join(process.env.DSH_HOME || join(process.env.USERPROFILE || '', '.dsh'), 'profiles', 'node_modules', '@deepseek-ai', 'dsh-skill'))
+const dshHome = process.env.DSH_HOME || join(process.env.USERPROFILE || '', '.dsh')
+const dshPackagesPresent = existsSync(join(dshHome, 'profiles', 'node_modules', '@deepseek-ai', 'dsh-skill'))
+// The desktop keeps its packages inside `app.asar`, readable only through the
+// Electron binary, so the installation itself is what makes the runtime reachable.
+const desktopRuntimePresent = existsSync('D:/Program Files/DeepSeek Harness/DeepSeek Harness.exe')
+const dshRuntimePresent = dshPackagesPresent || desktopRuntimePresent
 if (!existsSync(pluginRoot)) {
   notes.push(
     `the dsh-delivery-assured plugin is not present at ${pluginRoot}; its suites were NOT RUN in this checkout`,
@@ -75,8 +84,14 @@ if (!existsSync(pluginRoot)) {
       failures.push(`${test.label}: test file is missing at ${test.file}`)
       continue
     }
-    if (test.requiresDsh && !dshPackagesPresent) {
+    if (test.requires === 'dsh-packages' && !dshPackagesPresent) {
       notes.push(`${test.label} was NOT RUN: no DSH packages under $DSH_HOME/profiles/node_modules`)
+      continue
+    }
+    if (test.requires === 'dsh-runtime' && !dshRuntimePresent) {
+      notes.push(
+        `${test.label} was NOT RUN: no DSH runtime found (no desktop installation and no $DSH_HOME palette of packages)`,
+      )
       continue
     }
     const result = spawnSync(process.execPath, [test.file], { cwd: root, encoding: 'utf8' })

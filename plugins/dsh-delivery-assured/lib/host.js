@@ -1,5 +1,5 @@
-﻿/**
- * dsh-delivery-assured 鈥?the host half.
+/**
+ * dsh-delivery-assured 闁?the host half.
  *
  * Registers five read-only tools that expose the operation pack to a DSH session,
  * plus one runtime skill that tells the session how to work with the pack.
@@ -9,7 +9,7 @@
  * Those actions live in the external CI jobs, and a session cannot perform them.
  */
 
-import { defineTool, defineToolIsShimmed, defineToolShimReason } from './define-tool.js'
+import { defineTool, defineToolIsPassThrough, defineToolSource } from './define-tool.js'
 import { buildContext, resolvePackRoot, resolveProjectRoot, runScript, summarize } from './bridge.js'
 import { SKILL_DESCRIPTION, SKILL_MARKDOWN, SKILL_NAME, SKILL_WHEN_TO_USE } from './skill.js'
 
@@ -36,16 +36,15 @@ function renderResult(result) {
 
 export function apply(ctx, config = {}) {
   const workspace = config.workspace || process.cwd()
-  let cached = null
 
-  /** Resolve the pack, the project and the Node binary once, on first use. */
-  function context() {
-    if (!cached) cached = buildContext(config, workspace)
-    return cached
-  }
-
-  function requireReady() {
-    const ctxInfo = context()
+  // Resolve per call: a host-wide cache would reuse the first session's project.
+  function requireReady(exec = {}) {
+    const session = exec.agent?.session
+    const cwd = session?.header?.cwd || workspace
+    const ctxInfo = buildContext(config, cwd)
+    const policy = typeof ctx.get === 'function' ? ctx.get('sandboxPolicy') : ctx.sandboxPolicy
+    ctxInfo.signal = exec.signal
+    ctxInfo.sandboxPolicy = policy?.resolve(session ? { session } : {})
     if (ctxInfo.problems.length > 0) {
       return {
         ok: false,
@@ -82,9 +81,9 @@ export function apply(ctx, config = {}) {
           description: 'Treat warnings as blocking too.',
         },
       },
-      output: { schema: { type: 'object' }, render: (args, value) => renderResult(value) },
-      async execute(args) {
-        const ready = requireReady()
+      output: { schema: { type: 'object', additionalProperties: true }, render: (args, value) => renderResult(value) },
+      async execute(args, exec) {
+        const ready = requireReady(exec)
         if (!ready.ok) return ready
         const argv = ['--phase', args.phase]
         if (args.slice) argv.push('--slice', args.slice)
@@ -118,9 +117,9 @@ export function apply(ctx, config = {}) {
           description: 'Candidate revision to judge evidence against. Defaults to the current HEAD.',
         },
       },
-      output: { schema: { type: 'object' }, render: (args, value) => renderResult(value) },
-      async execute(args) {
-        const ready = requireReady()
+      output: { schema: { type: 'object', additionalProperties: true }, render: (args, value) => renderResult(value) },
+      async execute(args, exec) {
+        const ready = requireReady(exec)
         if (!ready.ok) return ready
         const argv = ['--view', args.view]
         if (args.slice) argv.push('--slice', args.slice)
@@ -148,9 +147,9 @@ export function apply(ctx, config = {}) {
           description: 'Skip reading remote protected references and say so, instead of failing.',
         },
       },
-      output: { schema: { type: 'object' }, render: (args, value) => renderResult(value) },
-      async execute(args) {
-        const ready = requireReady()
+      output: { schema: { type: 'object', additionalProperties: true }, render: (args, value) => renderResult(value) },
+      async execute(args, exec) {
+        const ready = requireReady(exec)
         if (!ready.ok) return ready
         const argv = args.offline ? ['--offline'] : []
         const result = await runScript(ready.ctx, ctx.shell, 'resume.mjs', argv)
@@ -173,9 +172,9 @@ export function apply(ctx, config = {}) {
       parameters: {
         slice: { type: 'string', description: 'Limit the report to one Slice.' },
       },
-      output: { schema: { type: 'object' }, render: (args, value) => renderResult(value) },
-      async execute(args) {
-        const ready = requireReady()
+      output: { schema: { type: 'object', additionalProperties: true }, render: (args, value) => renderResult(value) },
+      async execute(args, exec) {
+        const ready = requireReady(exec)
         if (!ready.ok) return ready
         const argv = args.slice ? ['--slice', args.slice] : []
         const result = await runScript(ready.ctx, ctx.shell, 'attempts.mjs', argv)
@@ -207,9 +206,9 @@ export function apply(ctx, config = {}) {
           },
         },
       },
-      output: { schema: { type: 'object' }, render: (args, value) => renderResult(value) },
-      async execute(args) {
-        const ready = requireReady()
+      output: { schema: { type: 'object', additionalProperties: true }, render: (args, value) => renderResult(value) },
+      async execute(args, exec) {
+        const ready = requireReady(exec)
         if (!ready.ok) return ready
         const argv = ['--local']
         if (args.slice) argv.push('--slice', args.slice)
@@ -244,15 +243,19 @@ export function apply(ctx, config = {}) {
   }
 
   // A session must be able to see what it resolved, because a wrong pack or project
-  // path otherwise looks like a Contract full of gaps.
-  ctx.effect(() => () => {
-    cached = null
-  })
-
+  // path otherwise looks like a Contract full of gaps. Resolution is per call, so
+  // this only reports the launch-time defaults.
   ctx.logger?.info?.(
-    `delivery-assured ready: pack=${resolvePackRoot(config) || '(not found)'} project=${resolveProjectRoot(config, workspace).root}` +
-      (defineToolIsShimmed ? ` (tool helper shimmed: ${defineToolShimReason})` : ''),
+    `delivery-assured ready: pack=${resolvePackRoot(config) || '(not found)'} project=${resolveProjectRoot(config, workspace).root} defineTool=${defineToolSource}`,
   )
+  if (defineToolIsPassThrough) {
+    ctx.logger?.warn?.(
+      'delivery-assured: the runtime defineTool was not found, so tool schemas were not projected by DSH. ' +
+        'Registering tools this way still works, but it means the runtime contract was not verified at load time.',
+    )
+  }
 }
+
+
 
 

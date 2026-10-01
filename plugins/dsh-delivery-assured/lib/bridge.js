@@ -176,6 +176,10 @@ export function buildContext(config = {}, workspace = process.cwd()) {
  * The scripts exit 0 for "no blocking gap", 1 for "blocking gap found" and 2 for an
  * input error. Exit code 1 is therefore a successful query with a blocking answer,
  * not a tool failure.
+ *
+ * The shell seam is `resolve(request) -> execute(spec) -> result()`: `execute`
+ * returns a process handle and `result()` yields the collected outcome, so a caller
+ * must not assume `execute` itself resolves with output.
  */
 export async function runScript(ctx, shell, script, args = [], { timeoutMs = 300000, json = true } = {}) {
   if (!ctx.packRoot) throw new Error('the operation pack is not resolvable')
@@ -187,8 +191,16 @@ export async function runScript(ctx, shell, script, args = [], { timeoutMs = 300
   const argv = [scriptPath, '--project', ctx.project.root, ...(json ? ['--json'] : []), ...args]
   const env = ctx.node.electronRunAsNode ? { ELECTRON_RUN_AS_NODE: '1' } : {}
   const command = buildCommandLine(ctx.node.bin, argv)
-  const spec = shell.resolve({ command, workdir: ctx.packRoot, timeoutMs, env })
-  const result = await shell.run(spec)
+  const spec = shell.resolve({
+    command,
+    workdir: ctx.packRoot,
+    timeoutMs,
+    env,
+    ...(ctx.signal ? { signal: ctx.signal } : {}),
+    ...(ctx.sandboxPolicy ? { sandboxPolicy: ctx.sandboxPolicy } : {}),
+  })
+  const handle = await shell.execute(spec)
+  const result = typeof handle?.result === 'function' ? await handle.result() : handle
 
   const stdout = String((result.stdout && result.stdout.text) || '')
   const stderr = String((result.stderr && result.stderr.text) || '')

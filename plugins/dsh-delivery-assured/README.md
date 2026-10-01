@@ -76,21 +76,40 @@ pnpm add "link:<repo>/plugins/dsh-delivery-assured"
 
 ## 要求与兼容性
 
-- DSH desktop `0.2.0-rc.2`，peer 依赖 `@deepseek-ai/dsh-tools` `0.1.5-rc.3`。
-- 工具输出 schema 必须落在 DSH 的强制 JSON Schema 子集内，这里用注解式 `{ type: 'object' }`。
-  **`{ type: 'json' }` 不在该子集里**，注册时会抛 `JsonSchemaError`，导致整个 profile 起不来。
+- **DSH desktop `0.2.0-rc.2`**，peer 依赖 `@deepseek-ai/dsh-tools` `^0.2.0-rc.2`。
+  版本必须与宿主**同一条线**：预发布版本之间不互相满足，所以 `^0.1.5-rc.3` 在 `0.2.0-rc.2`
+  上会被判定为不兼容，而 `^0.2.0` 也匹配不到 `0.2.0-rc.2`。
+- 插件**只从宿主提供的运行时**加载 `defineTool`（`$DSH_HOME` 下的 profiles，或测试显式钉住的目录）。
+  刻意不加载环境里任意找到的 `@deepseek-ai/dsh-tools`——那份副本可能属于另一条 DSH 版本线，
+  用它等于拿错误的契约校验插件。解析不到时回退为有文档说明的直通实现，并在日志里警告。
+- 命令接口是 0.2.x 的 `resolve(request) → execute(spec) → handle.result()`：
+  `execute` 返回进程句柄，输出在 `result()` 上。插件同时把会话的 `sandboxPolicy` 与 `signal`
+  透传给 shell，否则子进程不受会话沙箱模式约束。
+- 工具输出 schema 必须落在 DSH 的强制 JSON Schema 子集内：
+  `{ type: 'object', additionalProperties: true }`。
+  **`additionalProperties` 必须显式声明**，且 `{ type: 'json' }` 不在该子集里——
+  两者都会抛 `JsonSchemaError`，导致整个 profile 起不来。
 - 运行期 Skill 的正文键名是 `content`。**键名写错不会报错**，而是注册一个加载不到内容的空 Skill，
   所以有专门的测试用真实注册表读回正文。
-- 在 DSH profile 之外 `@deepseek-ai/dsh-tools` 合理地解析不到；此时插件走一个**有文档说明的
-  直通 shim** 以保持可测试性。在 profile 内真实实现永远优先。
 
 ## 测试
 
 ```bash
-node plugins/dsh-delivery-assured/test/smoke.mjs            # 50 项
-node plugins/dsh-delivery-assured/test/skill-registry.test.mjs  # 13 项（需 DSH 侧包）
+node plugins/dsh-delivery-assured/test/smoke.mjs                 # 50 项
+node plugins/dsh-delivery-assured/test/skill-registry.test.mjs   # 13 项
+node plugins/dsh-delivery-assured/test/compatibility.test.mjs    # 67 项 / 2 个运行时
 ```
 
+- **compatibility** 是唯一能挡住「插件装不上」的测试。另外两个在裸 Node 上就能跑完，
+  用的还是自己写的工具构造器与 shell 替身——这正是它们曾经**全绿而插件实际不可加载**的原因。
+  它会：
+  1. 用 DSH 自己的 `evaluatePluginCompatibility` 判定本插件清单；
+  2. 用**宿主的真实 `defineTool`** 注册五个工具（与 `tools.register()` 同一条投影与断言路径）；
+  3. 按 0.2.x 的 seam（`resolve → execute → result`）真跑一个工具，并断言
+     `sandboxPolicy` 被透传到 shell 请求。
+  桌面版把包放在 `app.asar` 内，只有 Electron 打过补丁的文件系统能读，所以该目标用
+  `ELECTRON_RUN_AS_NODE=1` 重跑本文件；插件会先复制到临时目录，避免从环境解析到另一条版本线。
+  **每个目标都断言「加载到的 defineTool 版本 == 该目标提供的版本」**，因此悄悄退回错副本会失败。
 - **smoke**：像会话一样驱动插件，对着真实项目的临时副本跑：解析 pack、
   通过真实 shell 运行真实脚本、检查工具与 Skill 注册，
   并断言**配置损坏时给出诊断而不是抛异常**。

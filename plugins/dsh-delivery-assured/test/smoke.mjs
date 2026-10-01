@@ -78,28 +78,31 @@ if (process.env.DSH_DA_DEBUG === '1') {
   process.stdout.write(`debug: context.node=${JSON.stringify(context.node)}\n`)
 }
 
-// A shell stub that runs the command for real through PowerShell, so the test
-// exercises the same quoting the session would.
+// A shell double that runs the command for real through PowerShell, so the test
+// exercises the same quoting the session would. It follows the 0.2.x seam:
+// resolve(request) -> execute(spec) -> handle.result().
 let lastCommand = null
 const shellStub = {
   resolve(request) {
     lastCommand = request.command
     return { ...request, resolved: true }
   },
-  async run(spec) {
+  async execute(spec) {
+    let outcome
     try {
       const stdout = process.platform === 'win32'
         ? execFileSync('powershell.exe', ['-NoProfile', '-Command', spec.command], { encoding: 'utf8', cwd: spec.workdir, env: { ...process.env, ...(spec.env || {}) }, maxBuffer: 32 * 1024 * 1024 })
         : execFileSync('sh', ['-c', spec.command], { encoding: 'utf8', cwd: spec.workdir, env: { ...process.env, ...(spec.env || {}) }, maxBuffer: 32 * 1024 * 1024 })
-      return { exitCode: 0, timedOut: false, stdout: { text: stdout }, stderr: { text: '' } }
+      outcome = { exitCode: 0, timedOut: false, stdout: { text: stdout }, stderr: { text: '' } }
     } catch (error) {
-      return {
+      outcome = {
         exitCode: typeof error.status === 'number' ? error.status : 1,
         timedOut: false,
         stdout: { text: String(error.stdout || '') },
         stderr: { text: String(error.stderr || error.message || '') },
       }
     }
+    return { ...outcome, result: async () => outcome }
   },
 }
 

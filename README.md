@@ -136,14 +136,23 @@ pnpm add "link:<repo>/plugins/dsh-delivery-assured"
 配置项（也可用环境变量）：`packRoot`（`DSH_DELIVERY_PACK`）、
 `projectRoot`（`DSH_DELIVERY_PROJECT`）、`nodeBin`（`DSH_DELIVERY_NODE`）。
 
+**兼容性**：插件面向 **DSH desktop `0.2.0-rc.2`**，peer 依赖
+`@deepseek-ai/dsh-tools` `^0.2.0-rc.2`。预发布版本之间不互相满足，所以只写版本线、
+不写具体预发布标签是行不通的（`^0.2.0` 匹配不到 `0.2.0-rc.2`）。
+DSH 在加载前会用自己的 `evaluatePluginCompatibility` 判定清单，不匹配就拒绝加载整个 bundle。
+
+改完插件后 `node plugins/dsh-delivery-assured/test/compatibility.test.mjs` 会用**宿主真实的
+`defineTool`** 与 0.2.x 的 shell seam 复验一次；它已被接入构建门，改名或降级接口都会让构建失败。
+
 ## 已验证的结果
 
 复现全部检查：
 
 ```bash
 node packages/delivery-assured/tests/yaml.test.mjs
-node plugins/dsh-delivery-assured/test/skill-registry.test.mjs
 node plugins/dsh-delivery-assured/test/smoke.mjs
+node plugins/dsh-delivery-assured/test/skill-registry.test.mjs
+node plugins/dsh-delivery-assured/test/compatibility.test.mjs
 node tools/ci-preflight.test.mjs
 node tools/markdown-structure.test.mjs
 node tools/build-gate-absent-plugin.test.mjs
@@ -156,7 +165,8 @@ cd project && node ../packages/delivery-assured/scripts/verify.mjs --local --sli
 | YAML 子集解析器回归测试 | 28 项通过 |
 | 插件自测（真实脚本 + 真实 shell） | 50 项通过 |
 | 插件 Skill 经真实 DSH 注册表读回 | 13 项通过（含「缺正文被拒」负向对照） |
-| CI preflight（workflow 每个路径、编码与步骤） | 81 项通过 |
+| **插件运行时契约（宿主真实 `defineTool` + shell seam）** | **67 项通过，覆盖桌面版 `0.2.0-rc.2` 与 0.1.5 线两个目标** |
+| CI preflight（workflow 每个路径、编码与步骤） | 82 项通过 |
 | Markdown 结构（表格、链接、锚点、围栏） | 81 项通过 |
 | 构建门在缺插件的裸包副本中仍通过 | 4 项通过（负向对照） |
 | `check-gaps` 三个阶段 | contract / acceptance / slice 均无阻塞 |
@@ -164,6 +174,23 @@ cd project && node ../packages/delivery-assured/scripts/verify.mjs --local --sli
 | 本地六个门 | 4 通过、1 有理由地不适用、1 声明为 CI-only |
 | 晋升链路本地演练 | 30 项通过（含真实 evidence 绑定、部署门观测值与条件检查） |
 | 插件在新宿主 profile 中组合 | 通过（`--dump-config` 输出包含该插件） |
+
+### 为什么需要一个「运行时契约」测试
+
+另外两个插件测试在裸 Node 上就能跑完：它们用自己写的工具构造器，再加一个自己写的 shell 替身。
+结果是**在插件实际无法被 DSH 加载时，它们仍然全绿**——peer 版本线写错、输出 schema 少一个
+必需字段、shell 接口从 `run()` 改成 `execute().result()`，这三点一个都没被它们发现。
+
+`test/compatibility.test.mjs` 补上这一层，而且是唯一能挡住「装不上」的测试：
+
+- 用 DSH 自己的 `evaluatePluginCompatibility` 判定清单，而不是自己复述一遍版本规则；
+- 用宿主**真实的 `defineTool`** 注册五个工具，走 `tools.register()` 同一条投影与断言路径；
+- 按 0.2.x 的 seam 真跑一个工具，并断言 `sandboxPolicy` 被透传，否则子进程不受会话沙箱约束。
+
+桌面版把包放在 `app.asar` 内，只有 Electron 打过补丁的文件系统能读，所以该目标用
+`ELECTRON_RUN_AS_NODE=1` 重跑本文件。插件先复制到临时目录，避免从环境解析到另一条版本线；
+每个目标都断言**加载到的 `defineTool` 版本 == 该目标提供的版本**，所以悄悄退回错副本会失败。
+
 
 ### CI preflight 是什么
 
