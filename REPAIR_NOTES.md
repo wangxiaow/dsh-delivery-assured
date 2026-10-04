@@ -148,6 +148,8 @@ the protected baseline ref was not moved.
 
 验证：convergence 套件 27/27（含新增"Spine 累积不破坏比较窗口""比较身份变化不被静默折叠""Spine 只能增长"）；**用 `delivery-state/main` 的真实账本复算** → `terminal_passed: true`、`blocked: false`、`invalid_entries: []`、`spine_accumulations` 报出 8 项。
 
+修复后在真实 CI 重跑同一条证据的晋升（run `37181131525`）→ **BL-001 晋升成功**：`refs/heads/baseline/main` = `038cb0ae`（第三轮候选），`parent_baseline: BL-000`（首次真实父基线链），`promotion_run_id: 37181131525-1`（归属修复生效），evidence `ci:verify:37180552926-1`，机验 8 项 / 剩余 3 项，Spine 8 个 case 且 `updated_by` 指向该晋升 run。至此链路为 **verify → collector → promote（带父基线与 Spine 单调累积）**，每条权威记录都指认自己的 run。
+
 
 ## 尚欠工程与外部实证
 
