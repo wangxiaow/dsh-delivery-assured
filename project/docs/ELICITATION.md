@@ -49,7 +49,14 @@
 - 确认来源：2026-10-04 本监督会话中，owner 对 staging 决策问题明确选择“承认现实：MVP_READY 用 production_like_ci（推荐）”。这是会话确认记录，不冒充外部签名或独立部署证明。
 - 变更：本仓库 Bootstrap/MVP 环境配置与 Contract 同步为 `production_like_ci`；`U-STAGING` 收敛为 resolved，旧的有界延期不再作为在途假设。
 - 保留：8 个 Required 自动验收、全部累积 Spine、`R-CORE-JOURNEYS` 人工 Review 以及原有 3 条发布前提。环境批准不等于 Review PASS，也不等于发布前提 PASS。
-- 局限：CI 安装探针只在临时目录运行保留产物，结束后清理；后续 owner 评审针对同一产物和这次运行记录，而非一个仍在线的 staging。
+- 局限：CI 安装探针只在临时目录运行保留产物，结束后清理；替代人工评审方式须单独批准，不能从 DEC-8 的环境批准推导 Review PASS。
+
+## DEC-9 发布保护与 DEC-10 人工评审方式
+
+- DEC-9（操作确认，不改发布前提）：本监督会话 owner 明确选择“开启，保留原发布前提（推荐）”，批准本轮真实 verify 通过后启用 main 的必需检查。不是已启用的声明，须以后续 API 核验为准。
+- DEC-10（仅内部 CLI 演示的 Review 方式变更）：owner 明确选择“允许同产物实走＋原 CI 观测（推荐）”。owner 在全新本地目录实走同一不可变候选/镜像，同时评审原 CI 运行记录；不声称在已清理的旧实例做过现场操作。
+- 回执必须区分原 `source_deployment_id` 与实际 `replay_deployment_id`，记录实际评审目录及 fresh identity/workspace 上下文，且绑定原 CI 与同一 artifact digest。内部 CLI 没有应用登录角色，fresh workspace 与实际 GitHub owner 身份仍要如实记录。
+- 这改变的是评审目标方式，不删除 `R-CORE-JOURNEYS` 或其结果，不减少任何 Required/Spine，不免除发布前提。只批准方式，仍需 owner 实际走 Journey 后在真实账号下确认；Agent 不得代做人工 PASS。其他项目未在冻结 Contract 显式批准时仍使用原 source-deployment Review。
 
 ## Gate 结论
 

@@ -91,7 +91,18 @@ export function classifyManualReview(record, definition, model, { candidate, par
     && b.contract_revision === e.bindings.contract_revision && b.acceptance_revision === e.bindings.acceptance_revision
     && b.image_digest === e.environment.image_digest && b.deployment_id === e.environment.deployment_id)
   if (!evidence) return result(STATUS.STALE_EVIDENCE, 'Review Record is not bound to the verified deployment and standards')
-  return result(STATUS.VERIFIED, `confirmed by ${record.reviewer} on ${b.deployment_id}`)
+  if (record.target_method && record.target_method !== (definition.target_method || 'source_deployment')) return result(STATUS.REVIEW_PENDING, 'Review target method was not approved in the Contract')
+  if (definition.target_method) {
+    if (!['source_deployment', 'retained_artifact_replay_with_ci_observation'].includes(definition.target_method) || record.target_method !== definition.target_method) return result(STATUS.REVIEW_PENDING, 'Review target method differs from the approved Contract')
+    if (definition.target_method === 'retained_artifact_replay_with_ci_observation') {
+      const ctx = record.review_context || {}
+      if (ctx.source_deployment_id !== b.deployment_id || ctx.artifact_digest !== b.image_digest || ctx.observation_mode !== 'historical_ci_install') return result(STATUS.STALE_EVIDENCE, 'Review replay does not bind the original CI installation and identical artifact')
+      if (['replay_deployment_id', 'review_target', 'identity_context'].some(key => typeof ctx[key] !== 'string' || isPlaceholder(ctx[key]) || /^\s*PENDING\s*$/i.test(ctx[key])) || ctx.replay_deployment_id === b.deployment_id) return result(STATUS.REVIEW_PENDING, 'Review replay needs the actual separate installation, location and fresh identity/workspace context')
+    }
+  }
+  return result(STATUS.VERIFIED, definition.target_method === 'retained_artifact_replay_with_ci_observation'
+    ? `confirmed by ${record.reviewer} on replay ${record.review_context.replay_deployment_id}; original CI observation ${b.deployment_id}`
+    : `confirmed by ${record.reviewer} on ${b.deployment_id}`)
 }
 
 /**

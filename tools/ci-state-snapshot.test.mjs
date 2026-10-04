@@ -3,7 +3,7 @@ import { spawnSync } from 'node:child_process'
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, symlinkSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { assertStateSnapshot } from '../ci/tools/ci-state-snapshot.mjs'
+import { assertStateTree, assertStateSnapshot } from '../ci/tools/ci-state-snapshot.mjs'
 
 const root = mkdtempSync(join(tmpdir(), 'ci-state-snapshot-offline-'))
 const repo = join(root, 'repo'), project = join(root, 'restored')
@@ -52,6 +52,12 @@ try {
   put(join(repo, 'project'), '.agent/CONTRACT.yaml', Buffer.from('not control state\n'))
   git(['add', '--', 'project'])
   stateSha = snapshot()
+  assert.throws(() => assertStateTree({ repo, stateSha }), /outside durable scopes/)
+  git(['update-index', '--force-remove', '--', 'project/source.txt', 'project/.agent/CONTRACT.yaml'])
+  const cleanState = snapshot(stateSha)
+  assert.equal(assertStateTree({ repo, stateSha: cleanState }).file_count, 6)
+  const treeCli = spawnSync(process.execPath, [join(import.meta.dirname, '../ci/tools/ci-state-snapshot.mjs'), '--check-tree', cleanState, '--repo', repo], { encoding: 'utf8' })
+  assert.equal(treeCli.status, 0, treeCli.stderr)
   reset()
   const result = check()
   assert.deepEqual(result, { diagnostic_only: true, state_sha: stateSha, state_project: 'project', file_count: 6 })

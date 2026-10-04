@@ -111,7 +111,10 @@ jobs:
           if ($LASTEXITCODE -eq 0) {
             git fetch --no-tags origin refs/heads/delivery-state/main
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-            git -c core.autocrlf=false archive --output=../state.tar FETCH_HEAD project
+            $stateSha = (git rev-parse FETCH_HEAD).Trim()
+            node ci/tools/ci-state-snapshot.mjs --check-tree $stateSha
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            git -c core.autocrlf=false archive --output=../state.tar $stateSha project
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
             tar -xf ../state.tar -C ../staged
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

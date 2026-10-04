@@ -106,7 +106,10 @@ try {
   check(duplicateDraft.status === 2, 'preparation refuses to overwrite an existing owner document')
   const ownerApproval = draftOwnerApproval(model, evidence, originalText)
   ownerApproval.result = 'PASS'
-  ownerApproval.reviews.forEach(review => { review.result = 'PASS' })
+  ownerApproval.reviews.forEach(review => {
+    review.result = 'PASS'
+    if (review.review_context) Object.assign(review.review_context, { replay_deployment_id: 'fixture-owner-replay-1', review_target: 'C:/explicit-fixture-owner-review', identity_context: 'synthetic fresh owner workspace; this test is not a real owner review' })
+  })
   ownerApproval.release_receipt.result = 'PASS'
   ownerApproval.release_receipt.prerequisites.forEach(p => { p.result = 'PASS' })
   const approvalPath = join(work, 'owner-approval.json')

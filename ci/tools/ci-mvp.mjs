@@ -24,7 +24,10 @@ export function draftOwnerApproval(model, record, evidenceText) {
     schema: APPROVAL_SCHEMA, result: 'PENDING', evidence_id: record.evidence_id,
     evidence_digest: sha256(evidenceText), source_run: record.execution?.ci_run_id,
     bindings,
-    reviews: (model.contract.acceptance?.manual_reviews || []).map(def => ({ review_id: def.id, reviewer_role: def.reviewer, result: 'PENDING', bindings: { ...bindings } })),
+    reviews: (model.contract.acceptance?.manual_reviews || []).map(def => ({ review_id: def.id, reviewer_role: def.reviewer, result: 'PENDING', bindings: { ...bindings },
+      ...(def.target_method ? { target_method: def.target_method } : {}),
+      ...(def.target_method === 'retained_artifact_replay_with_ci_observation' ? { review_context: { source_deployment_id: bindings.deployment_id, artifact_digest: bindings.image_digest, observation_mode: 'historical_ci_install', replay_deployment_id: 'PENDING', review_target: 'PENDING', identity_context: 'PENDING' } } : {}),
+    })),
     release_receipt: { result: 'PENDING', bindings: { ...bindings }, prerequisites: prerequisiteIds(model).map(id => ({ id, result: 'PENDING' })) },
   }
   const rebaseId = record.convergence?.comparison_approval_ref

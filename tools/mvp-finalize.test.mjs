@@ -94,6 +94,21 @@ for (const ref of ['https://evil.invalid/owner/repo/issues/1#issuecomment-42', '
   await assert.rejects(() => confirmOwnerApproval(ref, 'owner/repo', 'read-token', 'owner', mockFetch)); checks++
 }
 check(fetched === 1, 'reject wrong URLs before any authenticated network request')
+const replayModel = structuredClone(model)
+replayModel.contract.acceptance.manual_reviews[0].target_method = 'retained_artifact_replay_with_ci_observation'
+check(!finalizeMvp(replayModel, record, owner, options).ready, 'approved replay policy requires an explicit honest human execution context, not a legacy live-deployment claim')
+const replayDraft = draftOwnerApproval(replayModel, record, raw)
+replayDraft.result = 'PASS'; replayDraft.reviews.forEach(r => { r.result = 'PASS' })
+replayDraft.release_receipt = structuredClone(approval.release_receipt)
+check(!finalizeMvp(replayModel, record, envelope(replayDraft), options).ready, 'PENDING replay installation/location cannot be promoted even with owner PASS')
+const replayCtx = replayDraft.reviews[0].review_context
+Object.assign(replayCtx, { replay_deployment_id: 'fixture-owner-replay-1', review_target: 'C:/explicit-fixture-review', identity_context: 'owner using a fresh local workspace; read-only CLI has no application login' })
+check(finalizeMvp(replayModel, record, envelope(replayDraft), options).ready, 'explicitly approved identical artifact replay records distinct actual and historical installation identities')
+check(!finalizeMvp(model, record, envelope(replayDraft), options).ready, 'other projects cannot adopt replay without explicit frozen Contract approval')
+for (const patch of [{ replay_deployment_id: record.environment.deployment_id }, { artifact_digest: 'sha256:' + 'f'.repeat(64) }, { source_deployment_id: 'other-ci-install' }, { review_target: 'PENDING' }]) {
+  const bad = structuredClone(replayDraft); Object.assign(bad.reviews[0].review_context, patch)
+  check(!finalizeMvp(replayModel, record, envelope(bad), options).ready, 'replay refuses placeholder, false live identity or differing original artifact/installation')
+}
 const laterFailure = structuredClone(record)
 laterFailure.evidence_id = 'ci:verify:99-1'
 laterFailure.execution.ci_run_id = '99-1'

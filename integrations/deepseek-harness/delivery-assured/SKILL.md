@@ -46,6 +46,10 @@ The owner is asked at exactly three points, plus any real WHAT change:
    exact candidate/artifact in the named environment approved in the frozen Contract
    (staging by default). A documented owner-approved environment exception never
    waives this Review or turns a temporary CI installation into live staging.
+   Retained-artifact replay is permitted only when the frozen Contract explicitly
+   approves that Review target method; record the distinct real replay installation,
+   location and fresh identity/workspace, while keeping the CI installation as a
+   historical observation. Method approval is not a Review PASS.
 
 Ordinary HOW decisions, added tests inside the agreed semantics, and automatic promotion
 are not brought to the owner each time. Changing a product result, deleting an obligation

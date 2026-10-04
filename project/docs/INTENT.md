@@ -27,3 +27,5 @@
 | DEC-5 | CLI-INTERRUPT / CLI-PERMISSION / CLI-DESTRUCTIVE 是否适用？ | 不适用：只读单用户工具，无破坏性操作、无多主体权限边界 | 清单排除项 |
 | DEC-6 | 本 Slice 是否需要 staging？ | 当时决定：不需要；Bootstrap 与 MVP 阶段需要。环境决策现由 DEC-8 替代，不删除此历史记录 | deployment、U-STAGING |
 | DEC-8（2026-10-04） | 本仓库无独立 staging 时，MVP_READY 的环境要求如何处理？ | owner 在监督会话中明确选择“承认现实：MVP_READY 用 production_like_ci（推荐）”。只调整本仓库环境策略、记录无独立 staging/无运行时隔离的局限并解决 U-STAGING；不批准人工 Journey Review，不放宽 Required、Spine 或发布前提 | deployment、U-STAGING、C-BOOTSTRAP 的环境表述 |
+| DEC-9 | main 只有禁强推/删除，是否启用原契约要求的必需 verify？ | owner 选择“开启，保留原发布前提（推荐）”；本轮真实 CI 通过后启用，并由 API 验证。不得在启用前填 PASS | 发布前提的实施，不改变前提 |
+| DEC-10 | CI 临时安装被清理，owner 如何真实走最终 Journey？ | owner 选择“允许同产物实走＋原 CI 观测（推荐）”。在全新本地目录实走不可变同候选/镜像，并评审原 CI 观测；回执区分两个实例，记录实际目录与 fresh workspace/身份；只批准方式，不授予 Review PASS | R-CORE-JOURNEYS 的目标方式（仅内部演示），不减少义务/验收/发布前提 |

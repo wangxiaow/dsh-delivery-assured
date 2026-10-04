@@ -172,6 +172,16 @@ owner 明确选择本仓库 `MVP_READY` 使用 `production_like_ci`，并保留�
 
 [最终评审操作说明](project/docs/MVP_FINALIZATION.md) 给出完整顺序：新候选对 BL-001 验证并收集 → owner 实际评审同一保留产物和运行记录、核实发布前提 → 直接 MVP 晋升；不先推进一个中间 Baseline，不拿新安装套旧回执。CI 临时安装已经清理，报告不冒充仍在线的 staging。上述变更需要新的真实 CI Evidence，不能继承 BL-001 的 PASS；真实 owner Review 尚待执行。
 
+DEC-10 另由 owner 明确批准最终人工评审方式：全新本地目录实走同一不可变候选/镜像，结合原 CI 观测，回执分别标识两个实例、实际目录与 fresh identity/workspace；不冒充在已删除的 CI 安装上操作过。Contract 升为版本 3，原人工结果、Required/Spine 和发布前提不减少，批准方式不等于 Review PASS。Coverage 与最终确认共同拒绝未填 PENDING 上下文、把 replay 叫作旧 CI 实例、不同产物，以及未在冻结 Contract 批准就采用 replay 的其他项目；59 个最终确认反例/正向检查通过。
+
+审查又发现 state archive 可悄悄覆盖已核验 Contract/config（而 scoped byte snapshot 只比对数据），以及非 durable 的本地主张可控制 Replan 的 latest execution。两者均以确定性负控复现。现在所有 archive 前检查 Git tree 只含允许的 project state scopes、拒绝源码/策略/符号链接；Replan 恢复后再比对 canonical inputs，预算推导仅取 durable ci/evidence 且最新记录必须实际已在原账本计数。不能因 state SHA 固定就放过未经授权的策略覆盖。
+
+### 新候选预演触发 Replan，而非继续浪费 CI attempt
+
+完整重建 canonical/candidate/protected/staged，并覆盖 BL-001 的真实 state archive 后，新候选预算 precheck 在执行任何 Candidate gate 之前阻塞：`Replan required before further Candidate execution`。历史 3 次的 Required 都是 8/8，之前的失败来自 build 中的 Spine 记账自检，现有比较指标仍属无进展；新 checkout 不继承旧 PASS。**没有修改预算、删除旧失败或把本地绿灯当终态**。owner 明确批准补齐正式 `record-replan` CI 入口与入口级持久化/重放/陈旧状态/越界拒绝测试。
+
+[正式 Replan 提案](project/.agent/REPLAN.yaml) 记录被证伪的“评审后再重跑能完成 MVP”假设，替换为“一次机器 source + 独立 owner 最终确认”，保留全部 11 项 Required。新 [CI 入口](.github/workflows/record-replan.yml) 与 [状态服务](ci/tools/ci-replan.mjs) 仅追加 blocked/Replan 记录和不可改写收据，main-only、state-only、精确 source/state SHA，核对已批准 Contract/config、完整已收集历史与 unresolved diagnostics；不执行 Candidate、不持有 Baseline token、不形成 PASS。23 个离线入口反例验证 3/8 Candidate 历史原字节保留、Replan 变为 1/2、重复不再消耗、旧 state 与修改同 ID 被拒、Required/scope/配额越界被拒，原 FAIL 不改写。实际操作先持久记录 Replan，再对 BL-001 冻结验证；此 producer 同样必须用真实 CI 验证。
+
 ## 尚欠工程与外部实证
 
 1. **可运行、可独立实证的隔离后端仍未实现。** 已增加[限制型请求模块](ci/tools/ci-isolation.mjs)：固定 digest、non-root、无网络、只读输入、独立输出、资源限制、cap-drop、无主机环境继承及 shell；注入执行器的零退出始终不授予 runtime trust 或 Promotion。这个模块没有真实 executor，没有锁定/独立证明实际 mount 和 namespace；现有 verifier 的项目内写入也尚未适配只读输入，不能把请求参数或合成测试当作端到端可用后端。 本机 Get-Command docker 未发现 Docker CLI，未连接 daemon 或拉取镜像，不能以本机现有环境实证容器隔离。 候选和 verifier 目前不能凭复制 canonical 文件获得进程/文件系统隔离保证。collector 忽略候选自行提交的 trust 字段，仅将 transport 标为已确认，runtime_isolation_verified 固定 false；这些观察不能关闭 Coverage。**本轮已按 owner 决定把隔离从晋升硬门禁降级为告警：** `promotion.yml` 不再无条件阻塞，告警写入 Baseline 元数据 `runtime_isolation`，transport/仓库/run 身份/revision 来源仍阻塞。真实隔离后端依旧是欠账，不能用自报布尔值替代。

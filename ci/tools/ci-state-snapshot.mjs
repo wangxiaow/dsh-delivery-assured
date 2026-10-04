@@ -1,6 +1,7 @@
 import { spawnSync } from 'node:child_process'
 import { lstatSync, readdirSync, readFileSync } from 'node:fs'
 import { dirname, isAbsolute, join, resolve } from 'node:path'
+import { pathToFileURL } from 'node:url'
 
 const FILES = ['.agent/attempts.jsonl', '.agent/reviews.yaml', '.agent/STANDARD_CHANGES.yaml', 'ci/mvp-ready.json', 'tests/spine/manifest.yaml']
 const TREES = ['ci/recording', 'ci/evidence', 'ci/baseline']
@@ -31,6 +32,26 @@ function stat(path) {
 function directory(path) {
   const info = stat(path)
   if (!info || !info.isDirectory() || info.isSymbolicLink()) throw new Error(`state snapshot directory is missing or nonregular: ${path}`)
+}
+
+// Validate BEFORE extracting project from a state archive. Byte checks of scoped
+// files alone do not stop an archive from overwriting Contract/config/source.
+export function assertStateTree({ repo, stateSha, stateProject = 'project' }) {
+  if (!isAbsolute(repo || '') || !/^[0-9a-f]{40}$/.test(stateSha || '') || !safePath(stateProject)) throw new Error('invalid state tree configuration')
+  if (git(repo, ['cat-file', '-t', stateSha]).toString().trim() !== 'commit') throw new Error('state tree must identify a commit')
+  let count = 0
+  for (const entry of git(repo, ['ls-tree', '-r', '-z', '--full-tree', stateSha]).toString('utf8').split('\0').filter(Boolean)) {
+    const match = /^(\d{6}) (\w+) ([0-9a-f]{40})\t([\s\S]+)$/.exec(entry)
+    if (!match) throw new Error('invalid state tree entry')
+    const [, mode, type, , path] = match
+    if (path === stateProject || stateProject.startsWith(`${path}/`)) throw new Error('nonregular state project ancestor')
+    if (!path.startsWith(`${stateProject}/`)) continue // Not part of project archive.
+    const file = path.slice(stateProject.length + 1)
+    if (!scoped(file)) throw new Error(`state project entry outside durable scopes: ${file}`)
+    if (!safeRelative(file) || !['100644', '100755'].includes(mode) || type !== 'blob' || TREES.includes(file) || FILES.some(leaf => file.startsWith(`${leaf}/`))) throw new Error(`nonregular or unsafe state project entry: ${file}`)
+    count++
+  }
+  return Object.freeze({ diagnostic_only: true, state_sha: stateSha, state_project: stateProject, file_count: count })
 }
 
 // This is a read-only byte binding to a caller-selected protected snapshot, not
@@ -103,4 +124,16 @@ export function assertStateSnapshot(options) {
     if (!readFileSync(actual.get(relative)).equals(git(repo, ['show', `${stateSha}:${path}`]))) throw new Error(`state snapshot bytes mismatch: ${relative}`)
   }
   return Object.freeze({ diagnostic_only: true, state_sha: stateSha, state_project: stateProject, file_count: expected.size })
+}
+
+if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
+  try {
+    const args = process.argv.slice(2), options = {}
+    for (let i = 0; i < args.length; i++) {
+      const key = args[i]
+      if (!['--check-tree', '--repo'].includes(key) || options[key] || !args[i + 1] || args[i + 1].startsWith('--')) throw new Error('expected --check-tree <SHA40> [--repo <repository>]')
+      options[key] = args[++i]
+    }
+    console.log(JSON.stringify(assertStateTree({ repo: resolve(options['--repo'] || '.'), stateSha: options['--check-tree'] })))
+  } catch (error) { console.error(`STATE TREE BLOCKED ${error.message}`); process.exitCode = 2 }
 }

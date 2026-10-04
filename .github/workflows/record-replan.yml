@@ -1,0 +1,70 @@
+name: record-replan
+on:
+  workflow_dispatch:
+    inputs:
+      expected_state:
+        description: Exact delivery-state/main SHA reviewed before appending the canonical formal Replan
+        required: true
+permissions:
+  contents: read
+concurrency:
+  group: delivery-state-main
+  cancel-in-progress: false
+jobs:
+  record-replan:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    environment: delivery-state-recording
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Bind approved standard and exact durable state (no Candidate execution)
+        shell: bash
+        env:
+          EXPECTED_STATE: ${{ inputs.expected_state }}
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REF" = 'refs/heads/main'
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          git fetch --no-tags origin refs/heads/standards/acceptance
+          STD_SHA=$(git rev-parse FETCH_HEAD)
+          for FILE in project/.agent/CONTRACT.yaml project/.agent/project.yaml; do
+            test "$(git rev-parse "$STD_SHA:$FILE")" = "$(git rev-parse "HEAD:$FILE")"
+          done
+          git fetch --no-tags origin refs/heads/delivery-state/main
+          STATE_SHA=$(git rev-parse FETCH_HEAD)
+          test "$STATE_SHA" = "$EXPECTED_STATE"
+          node ci/tools/ci-state-snapshot.mjs --check-tree "$STATE_SHA"
+          git archive "$STATE_SHA" project | tar -x
+          # A full archive must not overwrite source/policy outside durable scopes.
+          git diff --exit-code "$GITHUB_SHA" -- project ':(exclude)project/.agent/attempts.jsonl' ':(exclude)project/.agent/reviews.yaml' ':(exclude)project/.agent/STANDARD_CHANGES.yaml' ':(exclude)project/ci/mvp-ready.json' ':(exclude)project/tests/spine/manifest.yaml' ':(exclude)project/ci/recording' ':(exclude)project/ci/evidence' ':(exclude)project/ci/baseline'
+          echo "DSH_STATE_REVISION=$STATE_SHA" >> "$GITHUB_ENV"
+      - name: Append immutable formal Replan only (state-only capability)
+        shell: bash
+        env:
+          STATE_PUSH_TOKEN: ${{ secrets.STATE_PUSH_TOKEN }}
+          DSH_GITHUB_READ_TOKEN: ${{ github.token }}
+          DSH_CI_RUN_ID: ${{ github.run_id }}-${{ github.run_attempt }}
+        run: |
+          set -euo pipefail
+          test -n "$STATE_PUSH_TOKEN"
+          git config user.name 'delivery-state-recording[bot]'
+          git config user.email 'delivery-state-recording@users.noreply.github.com'
+          git remote set-url origin "https://x-access-token:${STATE_PUSH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          node ci/tools/ci-replan.mjs
+      - name: Retain formal proposal (execution receipt lives in protected state)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: replan-proposal-${{ github.run_id }}-${{ github.run_attempt }}
+          path: project/.agent/REPLAN.yaml
+          retention-days: 90

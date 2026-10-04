@@ -136,6 +136,7 @@ jobs:
           git config http.extraHeader "AUTHORIZATION: basic $(printf 'x-access-token:%s' "$STATE_PUSH_TOKEN" | base64 -w0)"
           git fetch --no-tags origin refs/heads/delivery-state/main
           test "$(git rev-parse FETCH_HEAD)" = "$EXPECTED_STATE"
+          node ci/tools/ci-state-snapshot.mjs --check-tree "$EXPECTED_STATE"
           git -c core.autocrlf=false archive --output=state.tar "$EXPECTED_STATE" project
           tar -xf state.tar
           node ci/tools/ci-record.mjs --mode resolve-diagnostic --repo . --project project --environment delivery-state-resolution --owner "$DSH_RESOLUTION_OWNER" --expected-state "$EXPECTED_STATE" --diagnostic-run "$SOURCE_RUN-$SOURCE_ATTEMPT" --confirmation-ref "$CONFIRMATION_REF"
@@ -244,6 +245,7 @@ jobs:
           git ls-remote --exit-code origin refs/heads/delivery-state/main > /dev/null
           git fetch --no-tags origin refs/heads/delivery-state/main
           STATE_SHA=$(git rev-parse FETCH_HEAD)
+          node ci/tools/ci-state-snapshot.mjs --check-tree "$STATE_SHA"
           git archive "$STATE_SHA" project | tar -x
           echo "DSH_STATE_REVISION=$STATE_SHA" >> "$GITHUB_ENV"
           test -f project/.agent/attempts.jsonl

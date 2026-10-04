@@ -1,5 +1,5 @@
 schema_version: "0.5"
-contract_version: 2
+contract_version: 3
 status: approved
 product:
   id: delivery-assured
@@ -187,9 +187,13 @@ acceptance:
       obligation_ids: [J-DELIVERY-STATUS.ready, C-INPUT-DIAGNOSTICS]
       stage: before_mvp_ready
       reviewer: product_owner
+      target_method: retained_artifact_replay_with_ci_observation
+      approval_ref: DEC-10
+      target_limitations: CI 临时实例已清理；owner 在全新本地目录实走同一不可变候选/镜像，并评审原 CI 观测。回执分别标识原 CI 安装与实际本地评审实例，不能声称在旧 CI 实例上做过现场操作
 
 approval:
   status: approved
   unknowns_decision_ref: DEC-1..DEC-6 与 DEC-8（docs/ELICITATION.md 与 docs/INTENT.md 的正式澄清表）
-  acceptance_summary_ref: DEC-7（本 Contract 的验收摘要确认）
+  acceptance_summary_ref: DEC-7（原 Required 验收摘要保持不变）
+  review_target_ref: DEC-10（仅批准最终人工评审方式，不授予 Review PASS）
   effective_revision: "形成受保护提交流程后由 CI 解析，不由 Agent 宣告"

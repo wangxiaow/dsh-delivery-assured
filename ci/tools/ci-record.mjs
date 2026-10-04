@@ -10,7 +10,7 @@ import { sha256, standardBindings } from '../../packages/delivery-assured/script
 import { validateArtifact } from './ci-artifact.mjs'
 import { auditCompletedHistory, applyHistoryAudit } from './ci-history.mjs'
 import { buildDiagnosticResolution, unresolvedDiagnostics } from './ci-resolution.mjs'
-import { assertStateSnapshot } from './ci-state-snapshot.mjs'
+import { assertStateTree, assertStateSnapshot } from './ci-state-snapshot.mjs'
 import { validateBootstrapSeed } from './ci-bootstrap-seed.mjs'
 import { validateEvidenceRecord } from '../../packages/delivery-assured/scripts/lib/evidence.mjs'
 
@@ -166,6 +166,7 @@ export function restoreTrustedProject(repo, remote, provenance, evidenceDir) {
         }
       }
     }
+    assertStateTree({ repo, stateSha: parent })
     git(repo, ['-c', 'core.autocrlf=false', 'archive', `--output=${archive}`, parent, 'project'])
     execFileSync('tar', ['-xf', archive, '-C', repo], { stdio: 'inherit' })
   } finally { rmSync(temp, { recursive: true, force: true }) }
