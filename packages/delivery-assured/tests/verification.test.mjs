@@ -13,14 +13,25 @@ const model = loadModel(root)
 const dir = mkdtempSync(join(tmpdir(), 'dapse-verification-unit-'))
 const resultFile = join(dir, 'results.json')
 const caseId = model.acceptance.cases[0].id
+// The accumulated Spine is part of the required set: a Candidate must re-verify every
+// case a previous Baseline proved. This suite originally reported one case and asserted
+// "no problems", which was only true while the Spine was empty — the first real
+// promotion made CI fail with SPINE_CASE_NOT_EXECUTED. Model the real set here.
+const spineIds = [...(model.spine.caseIds || [])]
+const expectedIds = [...new Set([caseId, ...spineIds])].sort()
 const context = {
   root, model, cfg: model.cfg, candidate: 'a'.repeat(40), parentBaseline: null, sliceId: 'S1',
   acceptance: model.acceptance, spine: model.spine, opts: { 'ci-run-id': 'unit-1' },
-  expectedCaseIds: [caseId], runToken: 'unit-token', startedAt: new Date().toISOString(),
+  expectedCaseIds: expectedIds, runToken: 'unit-token', startedAt: new Date().toISOString(),
   verifier: { acceptance: { result_file: resultFile } },
 }
 let checks = 0
-const report = () => ({ run_token: 'unit-token', filter: null, timed_out: false, results: [{ case_id: caseId, outcome: 'passed' }] })
+const report = () => ({
+  run_token: 'unit-token',
+  filter: null,
+  timed_out: false,
+  results: expectedIds.map(id => ({ case_id: id, outcome: 'passed' })),
+})
 function account(doc) {
   writeFileSync(resultFile, JSON.stringify(doc))
   return accountCases(context)
@@ -44,6 +55,16 @@ try {
     const doc = report(); mutate(doc)
     assert.ok(account(doc).problems.length > 0); checks++
   }
+  // The behaviour that broke the first post-promotion CI run: once a Baseline has
+  // accumulated a Spine, a results file that skips those cases is incomplete — every
+  // previously proven case must run again (v0.5 axiom 8).
+  if (spineIds.length > 0) {
+    const skippedSpine = account({ ...report(), results: [{ case_id: caseId, outcome: 'passed' }] })
+    assert.ok(
+      skippedSpine.problems.some(problem => problem.code === 'SPINE_CASE_NOT_EXECUTED'),
+      'a record that skips accumulated Spine cases must be rejected',
+    ); checks++
+  }
   Object.assign(process.env, {
     DSH_STANDARD_REVISION: 'a'.repeat(40), DSH_VERIFIER_REVISION: 'a'.repeat(40),
     DSH_IMAGE_DIGEST: `sha256:${'b'.repeat(64)}`, DSH_DEPLOYED_IMAGE_DIGEST: `sha256:${'b'.repeat(64)}`,
@@ -57,7 +78,7 @@ try {
   assert.equal(make({ blocking: [{ code: 'GATE_FAILED' }] }).execution.result, 'FAIL'); checks++
   assert.equal(make({ gateResults: gates.slice(1) }).execution.result, 'FAIL'); checks++
   assert.equal(make({ caseAccounting: { ...good, failed: 1 } }).execution.result, 'FAIL'); checks++
-  assert.deepEqual(make({ caseAccounting: { ...good, results: [] } }).scope.required_case_ids, [caseId]); checks++
+  assert.deepEqual(make({ caseAccounting: { ...good, results: [] } }).scope.required_case_ids, expectedIds); checks++
   delete process.env.DSH_DEPLOYED_CODE_REVISION
   assert.ok(validateEvidenceRecord(make({})).length > 0); checks++
   const planningModel = {

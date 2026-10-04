@@ -20,6 +20,25 @@ const packRoot = join(repoRoot, 'packages', 'delivery-assured')
 const failures = []
 const notes = []
 
+/**
+ * One failing suite's diagnostic, sized so the CI log is enough to act on.
+ *
+ * A short tail hid the real assertion once: the run reported only "diff: 'simple'",
+ * and the failure had to be reproduced locally. Keep the head of the error (where the
+ * assertion message is) plus the last lines, and cap it so one noisy suite cannot
+ * bury the others.
+ */
+function failureDetail(result, { head = 6, tail = 4, maxChars = 1800 } = {}) {
+  const lines = `${result.stderr || ''}${result.stdout || ''}`
+    .split('\n')
+    .map((line) => line.trimEnd())
+    .filter((line) => line !== '')
+  const interesting = lines.filter((line) => /AssertionError|Error|FAIL|expected|actual|at file:/.test(line))
+  const picked = [...new Set([...interesting.slice(0, head), ...lines.slice(-tail)])]
+  const text = picked.join(' / ')
+  return text.length > maxChars ? `${text.slice(0, maxChars)}…` : text
+}
+
 const pkgPath = join(root, 'package.json')
 if (!existsSync(pkgPath)) {
   process.stderr.write('verify-build: package.json is missing at the repository root\n')
@@ -44,7 +63,7 @@ const yamlTests = spawnSync(process.execPath, [join(packRoot, 'tests', 'yaml.tes
   encoding: 'utf8',
 })
 if (yamlTests.status !== 0) {
-  failures.push(`yaml.test.mjs failed: ${(yamlTests.stderr || yamlTests.stdout || '').trim().split('\n').slice(-3).join(' / ')}`)
+  failures.push(`yaml.test.mjs failed: ${failureDetail(yamlTests)}`)
 }
 
 // The DSH plugin ships in the same repository, so its own suites run here too: the
@@ -112,14 +131,16 @@ if (!existsSync(pluginRoot)) {
     }
     const result = spawnSync(process.execPath, [test.file], { cwd: root, encoding: 'utf8' })
     if (result.status !== 0) {
-      failures.push(`${test.label} failed: ${(result.stderr || result.stdout || '').trim().split('\n').slice(-3).join(' / ')}`)
+      // Keep enough of the failure to diagnose it from the CI log: a 3-line tail once
+      // hid the actual assertion and the run had to be reproduced locally.
+      failures.push(`${test.label} failed: ${failureDetail(result)}`)
     }
   }
 }
 
 for (const file of ['evidence.test.mjs', 'verification.test.mjs', 'convergence.test.mjs']) {
   const result = spawnSync(process.execPath, [join(packRoot, 'tests', file)], { cwd: root, encoding: 'utf8' })
-  if (result.status !== 0) failures.push(`${file} failed: ${(result.stderr || result.stdout || '').trim().split('\n').slice(-4).join(' / ')}`)
+  if (result.status !== 0) failures.push(`${file} failed: ${failureDetail(result)}`)
 }
 
 // Loading a module is a stronger check than parsing it: it also catches a broken
