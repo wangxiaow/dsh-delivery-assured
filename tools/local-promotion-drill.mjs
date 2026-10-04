@@ -7,6 +7,7 @@ import { resolve, join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { execFileSync, spawnSync } from 'node:child_process'
 import { loadModel, classifyEvidence } from '../packages/delivery-assured/scripts/lib/model.mjs'
+import { draftOwnerApproval } from '../ci/tools/ci-mvp.mjs'
 
 const repo = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const work = mkdtempSync(join(tmpdir(), 'promotion-fixture-'))
@@ -74,8 +75,18 @@ try {
   const args = ['--fixture', '--project', project, '--evidence-dir', download, '--expected-parent', 'none', '--json']
   const ready = run('ci-promote.mjs', [...args, '--dry-run'])
   check(ready.code === 0, ready.text)
+  const planned = JSON.parse(ready.text.slice(ready.text.indexOf('{'))).metadata
+  check(planned.environment.deployment_id === evidence.environment.deployment_id, 'baseline records the observed deployment without calling it staging')
+  check(planned.environment.staging_deployment_id === null, 'production-like CI never populates a staging deployment field')
+  check(planned.environment.mvp_ready_environment === model.cfg.mvpReadyEnvironment, 'baseline records the explicitly configured MVP_READY environment')
+  check(JSON.stringify(planned.environment.limitations) === JSON.stringify(model.contract.deployment.environment_limitations), 'baseline preserves the owner-approved environment limitations')
   check(!existsSync(join(project, 'ci', 'baseline')), 'dry-run does not write metadata')
   check(run('ci-promote.mjs', [...args, '--dry-run', '--mode', 'MVP_READY']).code === 1, 'MVP readiness fails closed without full proof')
+  const labelOnly = structuredClone(evidence)
+  labelOnly.execution.mvp_ready = true
+  writeFileSync(evidenceFile, JSON.stringify(labelOnly))
+  check(run('ci-promote.mjs', [...args, '--dry-run', '--mode', 'MVP_READY']).code === 1, 'a self-declared readiness marker cannot replace authenticated owner receipts')
+  writeFileSync(evidenceFile, JSON.stringify(evidence))
   for (const mutate of [r => delete r.bindings.spine_manifest_digest, r => r.execution.gate_results.pop(), r => { r.execution.case_results[0].outcome = 'failed' }, r => { r.bindings.parent_baseline = 'BL-999' }]) {
     const changed = structuredClone(evidence)
     mutate(changed)
@@ -84,13 +95,40 @@ try {
   }
   writeFileSync(evidenceFile, JSON.stringify(evidence))
   check(run('ci-promote.mjs', [...args, '--dry-run'], { DSH_VERIFY_RUN_ID: 'different-run' }).code === 1, 'cross-run identity mismatch blocks')
-  const applied = run('ci-promote.mjs', [...args, '--apply'])
+  // Explicit synthetic owner approval exists only inside this disposable fixture.
+  // Original successful Evidence has no execution.mvp_ready marker and is untouched.
+  const originalText = readFileSync(evidenceFile, 'utf8')
+  const ownerDraftPath = join(work, 'review-draft.md')
+  const prepared = spawnSync(process.execPath, [join(repo, 'tools', 'prepare-owner-review.mjs'), '--project', project, '--evidence', evidenceFile, '--out', ownerDraftPath], { encoding: 'utf8' })
+  check(prepared.status === 0, prepared.stderr)
+  check(readFileSync(ownerDraftPath, 'utf8').includes('"result": "PENDING"') && !readFileSync(ownerDraftPath, 'utf8').includes('"result": "PASS"'), 'CLI review preparation cannot manufacture an owner PASS')
+  const duplicateDraft = spawnSync(process.execPath, [join(repo, 'tools', 'prepare-owner-review.mjs'), '--project', project, '--evidence', evidenceFile, '--out', ownerDraftPath], { encoding: 'utf8' })
+  check(duplicateDraft.status === 2, 'preparation refuses to overwrite an existing owner document')
+  const ownerApproval = draftOwnerApproval(model, evidence, originalText)
+  ownerApproval.result = 'PASS'
+  ownerApproval.reviews.forEach(review => { review.result = 'PASS' })
+  ownerApproval.release_receipt.result = 'PASS'
+  ownerApproval.release_receipt.prerequisites.forEach(p => { p.result = 'PASS' })
+  const approvalPath = join(work, 'owner-approval.json')
+  writeFileSync(approvalPath, JSON.stringify(ownerApproval))
+  const mvpArgs = [...args, '--mode', 'MVP_READY', '--owner-approval', approvalPath]
+  const finalReady = run('ci-promote.mjs', [...mvpArgs, '--dry-run'])
+  check(finalReady.code === 0, finalReady.text)
+  check(readFileSync(evidenceFile, 'utf8') === originalText, 'finalization never rewrites the original Evidence or adds a marker')
+  check(!existsSync(join(project, 'ci', 'mvp-ready.json')), 'finalization dry-run has no state side effects')
+  const applied = run('ci-promote.mjs', [...mvpArgs, '--apply'])
   check(applied.code === 0, applied.text)
   check(git(bare, ['rev-parse', 'refs/heads/baseline/main']) === candidate, 'baseline points at fixture candidate')
   const state = git(bare, ['rev-parse', 'refs/heads/delivery-state/main'])
   check(Boolean(state), 'durable state ref exists')
   const files = git(bare, ['ls-tree', '-r', '--name-only', state])
-  for (const name of ['project/ci/baseline/BL-000.json', 'project/ci/evidence/', 'project/tests/spine/manifest.yaml', 'project/.agent/attempts.jsonl']) check(files.includes(name), `durable ${name}`)
+  for (const name of ['project/ci/baseline/BL-000.json', 'project/ci/evidence/', 'project/tests/spine/manifest.yaml', 'project/.agent/attempts.jsonl', 'project/.agent/reviews.yaml', 'project/ci/mvp-ready.json', 'project/ci/recording/mvp-finalizations/fixture-finalization-1.json']) check(files.includes(name), `durable ${name}`)
+  const retainedEvidencePath = `project/ci/evidence/${evidence.evidence_id.replace(/[^A-Za-z0-9_.-]/g, '_')}.json`
+  check(git(bare, ['show', `${state}:${retainedEvidencePath}`]) === originalText.trim(), 'durable Evidence retains exact original bytes except displayed trim')
+  const durableReady = JSON.parse(git(bare, ['show', `${state}:project/ci/recording/mvp-finalizations/fixture-finalization-1.json`]))
+  check(durableReady.ready && durableReady.source_run === 'fixture-1', 'restoration retains separate full-contract readiness and exact original run')
+  check(loadModel(project).reviews.length === model.contract.acceptance.manual_reviews.length, 'derived owner Review projection is loadable after restoration')
+  check(loadModel(project).attempts.length === 1, 'owner finalization counts no additional Candidate attempt')
   const spine = git(bare, ['show', `${state}:project/tests/spine/manifest.yaml`])
   check(cases.every(id => spine.includes(id)), 'Spine automatically accumulates required cases')
   const restoredModel = loadModel(project)

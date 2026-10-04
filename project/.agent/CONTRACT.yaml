@@ -1,5 +1,5 @@
 schema_version: "0.5"
-contract_version: 1
+contract_version: 2
 status: approved
 product:
   id: delivery-assured
@@ -44,7 +44,7 @@ capabilities:
     observable: 同一仓库上，delivery status 与 scripts/coverage.mjs 对同一义务给出相同状态与依据
   - id: C-BOOTSTRAP
     required: true
-    observable: 生产式容器可干净启动，迁移入口可执行，staging 健康检查报告实际版本
+    observable: 生产式容器可干净启动，迁移入口可执行，声明的验证环境（本仓库为 production_like_ci，非独立 staging）健康检查报告实际版本
 
 business_rules:
   - id: BR-EVIDENCE-NOT-LOCAL
@@ -145,19 +145,12 @@ unknowns:
     affects: [C-BOOTSTRAP, deployment]
     impact: 无 staging 时 MVP_READY 不可达
     suggested_default: 本 Slice 不需要；Bootstrap 阶段再评估
-    status: deferred_with_approval
-    decision: 本 Slice 不适用；Bootstrap 与 MVP 阶段需要 staging 通道
-    scope: 仅覆盖首个 Slice 的验证集合，不改变任何 Journey 的可观察结果
-    review_at: Bootstrap 结束前
-    approval_ref: DEC-6
+    status: resolved
+    decision: 本仓库不设独立 staging 通道；Bootstrap 与 MVP_READY 均以 production_like_ci 为准，局限（非独立环境、无容器/命名空间隔离）如实记录
+    scope: 环境选择；不改变任何 Journey 的可观察结果
+    approval_ref: DEC-8
 
-approved_assumptions:
-  - id: U-STAGING
-    decision: Bootstrap 与 MVP 阶段需要 staging 通道；首个 Slice 以 production-like 容器验证为准
-    scope: 首个 Slice 的验证环境选择
-    risk: 若最终无法取得远端权限，MVP_READY 不可达，需如实报告阻塞
-    review_at: Bootstrap 结束前
-    approval_ref: DEC-6
+approved_assumptions: []
 
 out_of_scope:
   - item: billing
@@ -172,11 +165,14 @@ out_of_scope:
 
 deployment:
   slice_environment: production_like_container
-  bootstrap_environment: staging
-  mvp_ready_environment: staging
+  bootstrap_environment: production_like_ci
+  mvp_ready_environment: production_like_ci
   release_target: "内部演示：本机与 CI 上可复现的只读状态报告工具"
   mail_channel: not_applicable
   environment_sensitive_paths: [".github/workflows/verify.yml", ".github/workflows/promote.yml", "ci/verifier.yaml"]
+  environment_limitations:
+    - "本仓库没有独立 staging 通道：验证在受保护 CI runner 上安装并运行打包产物，报告 revision 与 digest"
+    - "不提供容器/命名空间级隔离；隔离后端仍是欠账，runtime_isolation 只作为告警记录在 Baseline 元数据"
   release_prerequisites:
     - "远端仓库与 CI 权限可用，verify.yml 与 promote.yml 已生效"
     - "refs/heads/baseline/main 由 Promotion job 建立并可读"
@@ -194,6 +190,6 @@ acceptance:
 
 approval:
   status: approved
-  unknowns_decision_ref: DEC-1..DEC-6（docs/ELICITATION.md 与 docs/INTENT.md 的正式澄清表）
+  unknowns_decision_ref: DEC-1..DEC-6 与 DEC-8（docs/ELICITATION.md 与 docs/INTENT.md 的正式澄清表）
   acceptance_summary_ref: DEC-7（本 Contract 的验收摘要确认）
   effective_revision: "形成受保护提交流程后由 CI 解析，不由 Agent 宣告"

@@ -142,6 +142,8 @@ assert.equal(classifyEvidence(incompleteScope, { ...options, model: reviewModel 
 const finalRecord = validRecord(); finalRecord.environment.kind = 'staging'
 finalRecord.scope.obligation_ids = ['C-TEST']
 const finalModel = { ...reviewModel,
+  // MVP_READY follows the configured environment (DEC-8), so the fixture states it.
+  cfg: { ...reviewModel.cfg, mvpReadyEnvironment: 'staging' },
   contract: { journeys: [], business_rules: [], acceptance: { manual_reviews: [] }, deployment: { release_prerequisites: ['reviewed-release'], operational_acceptance_ids: ['A-TEST'] } },
   obligations: new Map([['C-TEST', { id: 'C-TEST', kind: 'capability', required: true }]]),
   slices: [{ id: 'S1', obligations: ['C-TEST'], acceptance: ['A-TEST'] }],
@@ -157,6 +159,36 @@ assert.equal(assessMvpReady(finalModel, finalRecord, null).ready, false); checks
 const noIsolation = structuredClone(finalRecord)
 noIsolation.trust = { transport_verified: true, runtime_isolation_verified: false }
 assert.equal(assessMvpReady(finalModel, noIsolation, release).ready, true); checks++
+// The MVP_READY environment follows the Contract instead of a hard-coded 'staging':
+// a repo that verifies in production_like_ci says so, and the same record then counts.
+const configuredCi = { ...finalModel, cfg: { ...finalModel.cfg, mvpReadyEnvironment: 'production_like_ci' } }
+assert.equal(assessMvpReady(configuredCi, finalRecord, release).ready, false); checks++
+const productionRecord = structuredClone(finalRecord); productionRecord.environment.kind = 'production_like_ci'
+assert.equal(assessMvpReady(configuredCi, productionRecord, release).ready, true); checks++
+// An owner-approved exception must never become the default for other projects.
+const noMvpConfig = { ...finalModel, cfg: { ...reviewModel.cfg } }
+assert.equal(assessMvpReady(noMvpConfig, productionRecord, release).ready, false); checks++
+assert.equal(assessMvpReady(noMvpConfig, finalRecord, release).ready, true); checks++
+// A local config cannot silently weaken the environment frozen in the Contract.
+const conflictingPolicy = { ...configuredCi, contract: { ...configuredCi.contract, deployment: { ...configuredCi.contract.deployment, mvp_ready_environment: 'staging' } } }
+assert.equal(assessMvpReady(conflictingPolicy, productionRecord, release).ready, false); checks++
+for (const confirmation_ref of ['TODO', ' ', '<confirmation-ref>']) {
+  assert.equal(assessMvpReady(configuredCi, productionRecord, { ...release, confirmation_ref }).ready, false); checks++
+}
+
+// A final run cannot borrow an owner Review of another fresh deployment.
+const reviewedRun = structuredClone(productionRecord)
+const finalRun = structuredClone(productionRecord)
+finalRun.evidence_id = 'ci:verify:3-1'
+finalRun.execution.ci_run_id = '3-1'
+finalRun.execution.finished_at = '2026-01-01T00:00:03Z'
+finalRun.environment.deployment_id = 'different-final-deployment'
+const reviewRequired = { ...configuredCi,
+  contract: { ...configuredCi.contract, acceptance: { manual_reviews: [{ id: 'R-TEST', reviewer: 'product_owner', obligation_ids: ['C-TEST'] }] } },
+  evidence: [reviewedRun, finalRun], reviews: [structuredClone(review)],
+}
+const finalRelease = { ...release, bindings: { ...release.bindings, deployment_id: finalRun.environment.deployment_id } }
+assert.equal(assessMvpReady(reviewRequired, finalRun, finalRelease).ready, false); checks++
 
 const partial = { ...reviewModel,
   contract: { journeys: [{ id: 'J-TEST', outcomes: [{ id: 'J-TEST.done', required: true }, { id: 'J-TEST.accepted', required: true }] }], business_rules: [], acceptance: { manual_reviews: [] } },

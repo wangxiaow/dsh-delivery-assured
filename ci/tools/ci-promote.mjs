@@ -26,15 +26,18 @@
 import { readFileSync, writeFileSync, mkdirSync, existsSync, readdirSync, cpSync, mkdtempSync, rmSync } from 'node:fs'
 import { execFileSync } from 'node:child_process'
 import { join, dirname, resolve } from 'node:path'
-import { loadSpine, standardBindings, loadProjectConfig, fileDigest } from '../../packages/delivery-assured/scripts/lib/common.mjs'
+import { loadSpine, standardBindings, loadProjectConfig, fileDigest, sha256 } from '../../packages/delivery-assured/scripts/lib/common.mjs'
 import { collectCriticalViolations, coverageRows, blockingForView, classifyManualReview } from '../../packages/delivery-assured/scripts/lib/coverage-core.mjs'
 import { loadModel, classifyEvidence, checkUnknowns } from '../../packages/delivery-assured/scripts/lib/model.mjs'
 import { validateArtifact } from './ci-artifact.mjs'
 import { attemptFromCI, computeConvergence } from '../../packages/delivery-assured/scripts/lib/convergence.mjs'
 import { validateFixtureTarget, validatePromotionReceipt, isolationWarnings } from './ci-trust.mjs'
 import { scopeForSlice } from '../../packages/delivery-assured/scripts/lib/selection.mjs'
-import { assessMvpReady } from '../../packages/delivery-assured/scripts/lib/mvp.mjs'
-import { confirmReceipt } from './ci-record.mjs'
+import { decodeEvidence, confirmOwnerApproval, finalizeMvp } from './ci-mvp.mjs'
+import { confirmReceipt, diagnosticContext } from './ci-record.mjs'
+import { unresolvedDiagnostics } from './ci-resolution.mjs'
+import { assertStateSnapshot } from './ci-state-snapshot.mjs'
+import { auditCompletedHistory } from './ci-history.mjs'
 
 const GATES_REQUIRED = ['build', 'clean_boot', 'persistence_migration', 'slice_acceptance', 'regression_spine', 'deployment']
 
@@ -57,6 +60,7 @@ function parse(argv) {
     else if (token === '--protected-baseline-ref') opts.baselineRef = argv[++i]
     else if (token === '--remote') opts.remote = argv[++i]
     else if (token === '--fixture') opts.fixture = true
+    else if (token === '--owner-approval') opts.ownerApproval = argv[++i]
     else if (token === '--apply') opts.apply = true
     else if (token === '--mode') opts.mode = argv[++i]
     else if (token === '--dry-run') opts.dryRun = true
@@ -90,7 +94,7 @@ function loadEvidenceRecords(dir) {
     }
     if (!entry.name.endsWith('.json') || entry.name === 'baseline.json') continue
     try {
-      const doc = JSON.parse(readFileSync(full, 'utf8'))
+      const doc = decodeEvidence(readFileSync(full)).record
       if (doc && doc.evidence_id) records.push({ ...doc, __file: full })
     } catch {
       records.push({ evidence_id: null, __file: full, __invalid: true })
@@ -107,11 +111,24 @@ function nextBaselineId(existing) {
   return `BL-${String(next).padStart(3, '0')}`
 }
 
+async function historyBlockers(root) {
+  const dir = join(root, 'ci', 'recording', 'receipts')
+  const receipts = existsSync(dir) ? readdirSync(dir).filter(name => name.endsWith('.json')).map(name => JSON.parse(readFileSync(join(dir, name), 'utf8'))) : []
+  const audit = await auditCompletedHistory({ repository: process.env.GITHUB_REPOSITORY, token: process.env.DSH_GITHUB_READ_TOKEN, receipts })
+  // A queued collector is invisible to state CAS. Also wait for any active verify
+  // attempt before sealing readiness, rather than racing its still-unknown result.
+  return [...audit.blockers, ...(audit.examined !== audit.completed ? ['verification attempts are still active; wait for completion and durable collection before promotion'] : [])]
+}
+
 async function main() {
   const opts = parse(process.argv.slice(2))
   if (opts.help) {
     process.stdout.write('ci-promote — verify the promotion conditions and advance the protected baseline ref\n')
     return 0
+  }
+  if (opts.ownerApproval && !opts.fixture) {
+    process.stderr.write('PROMOTION BLOCKED local approval files are fixture-only; real MVP_READY requires an authenticated owner comment\n')
+    return 1
   }
   const root = resolve(opts.project)
   const cfg = loadProjectConfig(root)
@@ -135,6 +152,10 @@ async function main() {
       sourceReceipt = JSON.parse(readFileSync(receiptPath, 'utf8'))
       const provenance = await confirmReceipt(sourceReceipt, process.env.GITHUB_REPOSITORY, process.env.DSH_GITHUB_READ_TOKEN)
       sourceReceipt = { ...provenance, head_sha: provenance.verifier_revision, status: 'completed', isolation: sourceReceipt.isolation }
+      assertStateSnapshot({ repo: git(root, ['rev-parse', '--show-toplevel']).out, project: root, stateSha: process.env.DSH_STATE_REVISION })
+      blockers.push(...await historyBlockers(root))
+      const diagnostics = diagnosticContext(root, model)
+      for (const wrapper of unresolvedDiagnostics(diagnostics.wrappers, diagnostics.resolutions)) blockers.push(`unresolved recording diagnostic: ${JSON.parse(wrapper.diagnosticText).run_key}`)
     } catch (error) { process.stderr.write(`PROMOTION BLOCKED ${error.message}\n`); return 1 }
   }
 
@@ -244,6 +265,32 @@ async function main() {
     else try { validateArtifact(artifactRoots[0], evidence) } catch (error) { blockers.push(error.message) }
   }
 
+  // Finalize the authenticated original run after the owner reviewed its exact
+  // subject. This job executes no Candidate and never changes original Evidence.
+  let finalReadiness = null
+  if (opts.mode === 'MVP_READY' && evidence) {
+    try {
+      const sourceDigest = sha256(readFileSync(evidence.__file))
+      let ownerConfirmation
+      if (opts.fixture) {
+        if (!opts.ownerApproval) throw new Error('fixture MVP_READY requires explicit owner approval fixture')
+        const approval = JSON.parse(readFileSync(resolve(opts.ownerApproval), 'utf8'))
+        ownerConfirmation = { approval, owner: 'fixture-owner', reference: 'fixture:owner-approval', digest: sha256(JSON.stringify(approval)) }
+      } else {
+        if (process.env.DSH_CI_RUN_ID !== `${process.env.GITHUB_RUN_ID}-${process.env.GITHUB_RUN_ATTEMPT}` || process.env.GITHUB_REF !== 'refs/heads/main') throw new Error('finalization must name this exact trusted promotion run')
+        ownerConfirmation = await confirmOwnerApproval(process.env.DSH_OWNER_APPROVAL_REF, process.env.GITHUB_REPOSITORY, process.env.DSH_GITHUB_READ_TOKEN, cfg.ci?.product_owner || process.env.GITHUB_REPOSITORY_OWNER)
+      }
+      finalReadiness = finalizeMvp(model, evidence, ownerConfirmation, {
+        sourceDigest, parentBaseline: parentId,
+        finalizationRun: opts.fixture ? 'fixture-finalization-1' : process.env.DSH_CI_RUN_ID,
+        finalizerRevision: opts.fixture ? evidence.bindings.verifier_config_revision : process.env.GITHUB_SHA,
+      })
+      model.reviews = finalReadiness.reviews
+      if (finalReadiness.standard_change) model.standardChanges = [...model.standardChanges, finalReadiness.standard_change]
+      blockers.push(...finalReadiness.blocking)
+    } catch (error) { blockers.push(`MVP_READY owner finalization: ${error.message}`) }
+  }
+
   // ---- 4. No open Critical violation, unknown or unconfirmed change --------
   const scope = evidence && opts.mode !== 'MVP_READY' ? scopeForSlice(model, evidence.scope.slice_id) : null
   const criticalOpen = collectCriticalViolations(model, {
@@ -317,9 +364,15 @@ async function main() {
       validated_in: evidence?.environment?.kind || 'production_like_ci',
       image_digest: evidence?.environment?.image_digest || null,
       migration_digest: evidence?.bindings?.migration_digest || null,
+      deployment_id: evidence?.environment?.deployment_id || null,
+      // Keep historical staging data honest; an approved CI-only environment is
+      // recorded separately and never relabelled as a staging deployment.
       staging_deployment_id: evidence?.environment?.kind === 'staging' ? evidence.environment.deployment_id : null,
+      mvp_ready_environment: cfg.mvpReadyEnvironment,
+      limitations: model.contract.deployment?.environment_limitations || [],
     },
     evidence_refs: evidence ? [evidence.evidence_id] : [],
+    ...(finalReadiness?.ready ? { mvp_readiness_ref: `ci/recording/mvp-finalizations/${finalReadiness.finalization_run}.json`, owner_confirmation_ref: finalReadiness.owner_confirmation.reference } : {}),
     promotion_run_id: process.env.DSH_CI_RUN_ID || 'local-dry-run',
     // Recorded so a later reader can tell an attested promotion from a
     // not-yet-attested one instead of inferring safety from a missing field.
@@ -335,9 +388,10 @@ async function main() {
     if (!evidence || evidence.environment?.kind !== cfg.mvpReadyEnvironment) blockers.push('MVP_READY requires the configured environment')
     if (metadata.verification_scope.remaining_outcomes.length || metadata.verification_scope.manual_reviews_pending.length) blockers.push('MVP_READY requires every obligation and manual review closed')
     if ((model.contract.unknowns || []).some((unknown) => !['resolved', 'closed'].includes(unknown.status))) blockers.push('MVP_READY has unresolved or deferred unknowns')
-    if (evidence) blockers.push(...assessMvpReady(model, evidence, evidence.release_receipt, { candidate: evidence.bindings.code_revision, parentBaseline: parentId, trustedIssuer: cfg.ci?.trusted_issuer }).blocking)
-    // Recompute readiness here; a verifier marker is never sufficient by itself.
-    if (evidence?.execution?.mvp_ready !== true) blockers.push('MVP_READY requires an explicit trusted full-contract readiness result')
+    // Authenticated original machine PASS plus later authenticated owner receipts
+    // yield a separate, recomputed full-contract result. Never edit a historic run
+    // to add mvp_ready, and never trust its self-declared marker alone.
+    if (!finalReadiness?.ready) blockers.push('MVP_READY requires a passing authenticated full-contract finalization')
   }
   let promotedAttempt = null
   if (evidence) try {
@@ -369,6 +423,7 @@ async function main() {
     blockers,
     notes,
     metadata,
+    ...(finalReadiness ? { final_readiness: finalReadiness } : {}),
   }
 
   if (!ok) {
@@ -383,9 +438,20 @@ async function main() {
 
   // ---- Order: persist evidence and metadata, then conditional update -------
   if (opts.apply) {
+    if (!opts.fixture) {
+      const pendingHistory = await historyBlockers(root)
+      if (pendingHistory.length) {
+        process.stderr.write(`PROMOTION BLOCKED ${pendingHistory.join('; ')}\n`)
+        return 1
+      }
+    }
     const stateRef = 'refs/heads/delivery-state/main'
     const stateRemote = git(root, ['ls-remote', opts.remote, stateRef])
     const stateParent = stateRemote.out.split(/\s+/)[0] || ''
+    if (!opts.fixture && stateParent !== process.env.DSH_STATE_REVISION) {
+      process.stderr.write('PROMOTION BLOCKED durable state moved since restoration; restore and reassess\n')
+      return 1
+    }
     if (stateParent) git(root, ['fetch', '--no-tags', opts.remote, stateParent])
     git(root, ['fetch', '--no-tags', opts.remote, metadata.code_revision])
     const metadataDir = join(root, 'ci', 'baseline')
@@ -394,10 +460,16 @@ async function main() {
     const evidenceDir = join(root, 'ci', 'evidence')
     mkdirSync(evidenceDir, { recursive: true })
     for (const record of records) if (!record.__invalid && record.__file) {
-      const { __file, ...stored } = record
-      writeFileSync(join(evidenceDir, `${String(record.evidence_id).replace(/[^A-Za-z0-9_.-]/g, '_')}.json`), `${JSON.stringify(stored, null, 2)}\n`)
+      writeFileSync(join(evidenceDir, `${String(record.evidence_id).replace(/[^A-Za-z0-9_.-]/g, '_')}.json`), readFileSync(record.__file))
     }
-    if (opts.mode === 'MVP_READY') writeFileSync(join(root, 'ci', 'mvp-ready.json'), `${JSON.stringify({ mvp_ready: true, baseline_id: baselineId, code_revision: metadata.code_revision, image_digest: metadata.environment.image_digest, deployment_id: metadata.environment.staging_deployment_id, evidence_refs: metadata.evidence_refs, promotion_run_id: metadata.promotion_run_id }, null, 2)}\n`)
+    if (finalReadiness?.ready) {
+      const finalizationPath = join(root, metadata.mvp_readiness_ref)
+      mkdirSync(dirname(finalizationPath), { recursive: true })
+      writeFileSync(finalizationPath, `${JSON.stringify(finalReadiness, null, 2)}\n`, { flag: 'wx' })
+      writeFileSync(join(root, '.agent', 'reviews.yaml'), `reviews: ${JSON.stringify(finalReadiness.reviews)}\n`)
+      if (finalReadiness.standard_change) writeFileSync(join(root, '.agent', 'STANDARD_CHANGES.yaml'), `changes: ${JSON.stringify(model.standardChanges)}\n`)
+      writeFileSync(join(root, 'ci', 'mvp-ready.json'), `${JSON.stringify({ mvp_ready: true, baseline_id: baselineId, code_revision: metadata.code_revision, image_digest: metadata.environment.image_digest, deployment_id: metadata.environment.deployment_id, environment_kind: metadata.environment.validated_in, environment_limitations: metadata.environment.limitations, evidence_refs: metadata.evidence_refs, readiness_ref: metadata.mvp_readiness_ref, owner_confirmation_ref: metadata.owner_confirmation_ref, promotion_run_id: metadata.promotion_run_id }, null, 2)}\n`)
+    }
     const accumulated = [...new Set([...loadSpine(root, cfg).caseIds, ...(evidence.scope.required_case_ids || [])])].sort()
     const spinePath = resolve(root, cfg.paths.spineManifest)
     mkdirSync(dirname(spinePath), { recursive: true })
@@ -415,7 +487,9 @@ async function main() {
       const env = { ...process.env, GIT_INDEX_FILE: join(indexDir, 'index'), GIT_AUTHOR_NAME: 'Promotion CI', GIT_AUTHOR_EMAIL: 'promotion@example.invalid', GIT_COMMITTER_NAME: 'Promotion CI', GIT_COMMITTER_EMAIL: 'promotion@example.invalid' }
       const indexed = (args) => execFileSync('git', args, { cwd: root, env, encoding: 'utf8' }).trim()
       indexed(['read-tree', ...(stateParent ? [stateParent] : ['--empty'])])
-      indexed(['add', '--', 'ci/baseline', 'ci/evidence', cfg.paths.spineManifest, cfg.paths.attemptsLog])
+      indexed(['add', '--', 'ci/baseline', 'ci/evidence', cfg.paths.spineManifest, cfg.paths.attemptsLog,
+        ...(finalReadiness?.ready ? ['.agent/reviews.yaml', 'ci/mvp-ready.json', metadata.mvp_readiness_ref] : []),
+        ...(finalReadiness?.ready && finalReadiness.standard_change ? ['.agent/STANDARD_CHANGES.yaml'] : [])])
       const tree = indexed(['write-tree'])
       stateCommit = indexed(['commit-tree', tree, ...(stateParent ? ['-p', stateParent] : []), '-m', `Persist ${baselineId} evidence and Spine`])
     } finally { rmSync(indexDir, { recursive: true, force: true }) }

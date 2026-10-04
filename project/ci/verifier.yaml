@@ -42,7 +42,8 @@ gates:
   - gate: deployment
     # 部署观测由 ci/tools/ci-deploy-probe.mjs 生产：把打包产物装进干净目录并实际运行，
     # 再报告观测到的 revision/image digest（不是 DSH_CANDIDATE 的回显）。它明确不是
-    # staging 部署、也不是容器隔离；MVP_READY 仍要求真实 staging（environment.kind）。
+    # staging 部署、也不是容器隔离；DEC-8 仅批准本仓库 production_like_ci 环境例外，
+    # 不免除全量验收、owner Journey Review 或发布前提。其他项目默认仍要求 staging。
     command: "node scripts/verify-deployment.mjs"
     local: skip
     timeout_ms: 300000

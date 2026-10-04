@@ -233,7 +233,7 @@ export function recordAttempt({ repo, project, remote = 'origin', provenance, ev
   return { status: errors.length ? 'blocked' : 'recorded', state_sha: state, attempt_id: attempt?.attempt_id, errors }
 }
 
-function diagnosticContext(project, model) {
+export function diagnosticContext(project, model) {
   const receipts = walk(join(project, 'ci/recording/receipts')).map(path => JSON.parse(readFileSync(path, 'utf8')))
   const evidence = model.evidence.map(record => ({ record, sourceReceipt: receipts.find(r => r.run_key === record.execution?.ci_run_id) }))
   const wrappers = walk(join(project, 'ci/recording/diagnostics')).map(path => ({ diagnosticText: readFileSync(path, 'utf8'), evidence, attempts: model.attempts }))

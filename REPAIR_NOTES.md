@@ -157,17 +157,29 @@ the protected baseline ref was not moved.
 需要临时解除（例如不得不在 `main` 上改写历史）：
 `gh api -X DELETE repos/wangxiaow/dsh-delivery-assured/branches/main/protection`
 
-`Contract.deployment.release_prerequisites` 还要求"分支保护要求 verify 必需检查通过"：那一步会给 `main` 加必需状态检查并强制 PR 流程，会改变本仓库的推送习惯，**尚未开启**，等 owner 决定。
+`Contract.deployment.release_prerequisites` 还要求"分支保护要求 verify 必需检查通过"：这要求目标提交先通过必需检查（通常通过 PR 合入；不是自动要求 PR review），会改变当前直接推送习惯，**尚未开启**。禁止强推/删除不能替代这条前提，owner 已在本监督会话批准本轮真实 CI 通过后开启必需检查；启用前不假填 PASS，最终以 API 核验结果为准。
 
+
+## 本轮：MVP 环境批准与不可变证据最终确认（DEC-8）
+
+owner 明确选择本仓库 `MVP_READY` 使用 `production_like_ci`，并保留无独立 staging/无运行时隔离的局限。[Contract](project/.agent/CONTRACT.yaml) 升为版本 2、解决 U-STAGING；该批准**不等于最终 Journey Review 或发布前提通过**。其他项目仍默认 staging；冻结 Contract 和配置不一致会阻塞。8 个受保护 Required case、断言、Spine 和 3 条原发布前提保持不变。
+
+实证反馈循环找到并修复三个边界：默认值不能随本仓库降标；旧部署的人工 Review 不能给另一新部署的 release 兜底；原始 Evidence 必须按 Buffer 字节绑定并拒绝非法 UTF-8，不能靠解码后的替换字符得到同一个摘要。
+
+还复现了 MVP 流程死锁：普通 verify 不产生 `execution.mvp_ready`，等待 owner 后重跑会改变真实部署 ID、使旧回执失效。现在 [最终确认模块](ci/tools/ci-mvp.mjs) 与 [晋升入口](ci/tools/ci-promote.mjs) 消费精确 GitHub verify attempt 的原始保留文件，独立读 owner 本仓库评论的实际账号与 typed JSON，再重新计算全 Contract 结果。原 Evidence、安装 ID、产物不回写、不重建；单独持久保存最终回执、Review 投影及 MVP 标记，修复原先标记未纳入 state commit 的遗漏。owner 草稿全部 PENDING，不能因为共享 owner token 而自动授予 PASS。
+
+晋升前、实际发布前均核对 completed history，并拒绝未收集/在途验证；逐字节绑定恢复 state SHA，再以 Baseline+state 双引用原子 lease 提交。旧 diagnostic 原文保留、有效 resolution 可解除阻塞，不再要求删光历史。环境标准变化的比较重基也必须由 owner 对精确 from/to digest 确认，审批保存到 durable state，原有 3 次 attempt 不清零、不改写。
+
+[最终评审操作说明](project/docs/MVP_FINALIZATION.md) 给出完整顺序：新候选对 BL-001 验证并收集 → owner 实际评审同一保留产物和运行记录、核实发布前提 → 直接 MVP 晋升；不先推进一个中间 Baseline，不拿新安装套旧回执。CI 临时安装已经清理，报告不冒充仍在线的 staging。上述变更需要新的真实 CI Evidence，不能继承 BL-001 的 PASS；真实 owner Review 尚待执行。
 
 ## 尚欠工程与外部实证
 
 1. **可运行、可独立实证的隔离后端仍未实现。** 已增加[限制型请求模块](ci/tools/ci-isolation.mjs)：固定 digest、non-root、无网络、只读输入、独立输出、资源限制、cap-drop、无主机环境继承及 shell；注入执行器的零退出始终不授予 runtime trust 或 Promotion。这个模块没有真实 executor，没有锁定/独立证明实际 mount 和 namespace；现有 verifier 的项目内写入也尚未适配只读输入，不能把请求参数或合成测试当作端到端可用后端。 本机 Get-Command docker 未发现 Docker CLI，未连接 daemon 或拉取镜像，不能以本机现有环境实证容器隔离。 候选和 verifier 目前不能凭复制 canonical 文件获得进程/文件系统隔离保证。collector 忽略候选自行提交的 trust 字段，仅将 transport 标为已确认，runtime_isolation_verified 固定 false；这些观察不能关闭 Coverage。**本轮已按 owner 决定把隔离从晋升硬门禁降级为告警：** `promotion.yml` 不再无条件阻塞，告警写入 Baseline 元数据 `runtime_isolation`，transport/仓库/run 身份/revision 来源仍阻塞。真实隔离后端依旧是欠账，不能用自报布尔值替代。
 2. **未计数诊断恢复与真实 reconciliation 实证尚欠。** [定时工作流](.github/workflows/reconcile.yml)已实现 main-only 自动核对并请求一条最老的精确漏项，独立 concurrency、actions-write-only dispatcher，不持有 state/baseline 写凭据。HTTP 204 不清除缺口，必须下一轮独立 receipt 核对；7 项计划/传输反例及 11 项接线检查通过，未执行真实调度。 已增加 main-only `record-attempt` 手工重跑 collector 入口，独立确认精确来源与产物，不授予 Baseline 能力；已有 receipt 不覆盖。`resolve-diagnostic` 接入独立 owner 审批环境、明确 state SHA lease 和不可改写的原字节 digest；仅处理已完整保留、已计数的 FAILED 记录，原失败、原诊断和 Evidence 保留，新增 resolution 不转换为 PASS。[35 项纯校验](tools/ci-resolution.test.mjs)和[本地持久留痕演练](tools/ci-record.test.mjs)通过，实际环境审批尚未核验。 concurrency 不是持久队列，pending job 可能被替换；[历史核对](ci/tools/ci-history.mjs)已接入 precheck：独立只读 API 分页检查每个精确 completed attempt，包括同 run 的早期重跑；漏 receipt、分页不完整、限额耗尽及冲突均阻止新候选执行。20 项离线检查已通过；发现历史缺口后预算同步置 history_known=false、remaining=null、terminal_passed=false，不能只显示阻塞却继续展示“还有八次”或终态 PASS。自动补录需要实际平台权限及调度实证，平台已删除的历史也不能据此当成不存在；未解决诊断继续阻塞。不能声称预算记录已获平台端无遗漏保证。
-3. **真实平台保护未核验。** origin 已配置，本地跟踪引用存在；不是“没有远端”。CODEOWNERS、标准更新身份、state/PROMOTION 身份、环境审批和非授权推送拒绝都尚待实际验证。
-4. **账本初始化欠确认。** 当前日志缺失、余量未知；不得造一个零次历史。首次 bootstrap 要 owner 确认 seed，已有 state 禁止重置。
-5. **真实 staging、发布前提和最终 owner Journey Review 缺失。** 未确认部署同候选/镜像，未取得版本绑定的人工回执，不宣称 MVP_READY。MVP 计算/晋升接口的真实正向通路尚未完成实证。
+3. **平台保护已有部分实证，身份隔离与必需检查尚欠。** 四个引用的禁强推/删除已由 API 核实并实测普通快进推送兼容；main 必需 verify 检查仍未开启。CODEOWNERS、独立标准更新/state/PROMOTION 身份、环境审批和非授权推送拒绝仍待验证；共用 owner OAuth token 不能当作角色隔离证明。
+4. **账本已由 owner 批准初始化，持久历史不可重置。** bootstrap run `37178817434` 已成功，BL-001 后保留 3 次 attempt（pass/fail/pass）；本工作区未叠加状态时日志缺失不等于远端历史为零。
+5. **发布前提和最终 owner Journey Review 尚欠。** DEC-8 明确批准本仓库无独立 staging 的环境例外，但未授予 Review PASS。全契约最终确认已有本地正向/反例与持久化演练，真实 CI 正向最终晋升仍需新的机器 Evidence 和真实 owner 回执。
 
-最后一次[离线恢复工具](packages/delivery-assured/scripts/resume.mjs)退出 1 是预期阻塞：0 条可信 Evidence、无真实 Baseline、11 项 Required 尚无当前交付证明，另有缺账本与四条当前 Critical 证明缺口。代码存在和本地测试通过不把这些项转成已交付。
+[离线恢复工具](packages/delivery-assured/scripts/resume.mjs) 在未叠加 durable state 的工作区退出 1 是预期阻塞，不代表 GitHub 上没有 Evidence/Baseline。对 BL-001 精确 revision 恢复状态，结果为机验 8、Review 待审 3；较新 checkout 会如实报告旧 Evidence 陈旧。代码存在和本地测试通过不把欠账转成已交付。
 
 [保护与操作前提](ci/protection/README.md)说明角色边界和初始化条件；[可编辑状态摘要](project/.agent/STATE.yaml)不是第二份权威账本。当前会话默认工作目录不等于目标仓库，所有诊断均显式指向本仓库的 project。

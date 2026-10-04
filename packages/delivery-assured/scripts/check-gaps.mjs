@@ -348,6 +348,8 @@ function checkSliceSelection(model, issues, { sliceId }) {
 
 /** MVP gate: every required result needs current evidence and a completed review. */
 function checkMvpReadiness(model, issues) {
+  const configuredEnvironment = model.cfg?.mvpReadyEnvironment || 'staging'
+  if (model.contract.deployment?.mvp_ready_environment && model.contract.deployment.mvp_ready_environment !== configuredEnvironment) issues.push({ level: 'fail', code: 'MVP_ENVIRONMENT_CONFLICT', message: 'MVP_READY environment configuration differs from the frozen Contract' })
   const requireCaseIds = model.acceptance.cases.filter((c) => c.required === true).map((c) => c.id)
   checkAcceptanceManifest(model, issues, { requireCaseIds })
 
@@ -420,17 +422,19 @@ function checkMvpReadiness(model, issues) {
     })
   } else {
     const latest = baselines[baselines.length - 1]
-    const staging = model.evidence.find(e => latest.evidence_refs?.includes(e.evidence_id)
+    const mvpEnvironment = model.cfg?.mvpReadyEnvironment || 'staging'
+    const deploymentId = latest.environment?.deployment_id || latest.environment?.staging_deployment_id
+    const verifiedDeployment = model.evidence.find(e => latest.evidence_refs?.includes(e.evidence_id)
       && e.bindings?.code_revision === candidate && latest.code_revision === candidate
-      && e.environment?.kind === 'staging' && e.environment?.deployment_id === latest.environment?.staging_deployment_id
+      && e.environment?.kind === mvpEnvironment && e.environment?.deployment_id === deploymentId
       && e.environment?.image_digest === latest.environment?.image_digest
       && automated.every(c => proveCase({ ...model, evidence: [e] }, c.id, { codeRevision: candidate, parentBaseline, trustedIssuer })?.fresh))
-    if (!staging) issues.push({ level: 'fail', code: 'STAGING_NOT_CURRENT', message: 'staging deployment is not proven on the current candidate, image and complete machine set' })
-    if (!latest.environment?.staging_deployment_id) {
+    if (!verifiedDeployment) issues.push({ level: 'fail', code: 'STAGING_NOT_CURRENT', message: `${mvpEnvironment} deployment is not proven on the current candidate, image and complete machine set` })
+    if (!deploymentId) {
       issues.push({
         level: 'fail',
         code: 'NO_STAGING_DEPLOYMENT',
-        message: `baseline ${latest.baseline_id} has no staging deployment id; MVP_READY requires staging on the same candidate`,
+        message: `baseline ${latest.baseline_id} has no deployment id for ${mvpEnvironment}; MVP_READY requires an observed deployment on the same candidate`,
         id: latest.baseline_id,
       })
     }

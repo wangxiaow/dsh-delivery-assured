@@ -85,7 +85,7 @@ try {
   assert.equal(check({ stateSha: baselineSuccessor }).file_count, 9)
   reset()
 
-  for (const path of ['ci/recording/resolutions/forged.json', 'ci/recording/receipts/extra.json', 'ci/recording/diagnostics/extra.json', 'ci/evidence/extra.json', 'ci/baseline/forged.json']) {
+  for (const path of ['.agent/reviews.yaml', '.agent/STANDARD_CHANGES.yaml', 'ci/mvp-ready.json', 'ci/recording/mvp-finalizations/forged.json', 'ci/recording/resolutions/forged.json', 'ci/recording/receipts/extra.json', 'ci/recording/diagnostics/extra.json', 'ci/evidence/extra.json', 'ci/baseline/forged.json']) {
     put(project, path, Buffer.from('{}\n'))
     assert.throws(() => check(), /extra:/)
     reset()

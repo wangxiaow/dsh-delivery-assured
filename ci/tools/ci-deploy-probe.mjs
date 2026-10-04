@@ -17,8 +17,9 @@
  *
  * What it is not: a staging deployment, and not container or namespace isolation.
  * For a CLI, the declared release target is a clean host/container plus a real
- * install; MVP_READY still requires staging and enforces `environment.kind`,
- * which this probe never sets.
+ * install; MVP_READY enforces the explicitly approved project environment
+ * (staging by default). This probe never turns a CI installation into staging,
+ * and it removes the temporary install after retaining the observation.
  *
  * Usage:
  *   node ci/tools/ci-deploy-probe.mjs --project <path> [--artifact <dir>] [--quiet]
@@ -115,7 +116,7 @@ function main() {
       started,
       exit_code: run.status,
       scope: 'clean install of the packaged artifact on this machine',
-      limitation: 'not a staging deployment and not container/namespace isolation; MVP_READY still requires staging',
+      limitation: 'not a staging deployment and not container/namespace isolation; temporary install is removed after observation; MVP_READY follows explicit project policy and still requires owner Review',
     }
     // Written outside the verified artifact directory on purpose:
     // `verify-artifact --check` rejects any file added next to the verified

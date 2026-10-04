@@ -42,11 +42,18 @@
 | U-CI-AUTHORITY | 本地运行是否可以宣告完成？ | BR-EVIDENCE-NOT-LOCAL | 会把本地绿灯当成完成，破坏方案核心 | 只有受保护 CI 的验证 job 产出证据，Promotion job 独占晋升 | 采用：本地一律诊断为 `local_diagnostic`，权威判定留在外部 CI | resolved（DEC-2） |
 | U-DELIVERY-BOUNDARY | 自动写入 Baseline 或 STATE 是否属于本工具范围？ | C-INPUT-DIAGNOSTICS | 会把可信边界下沉到本地工具 | 工具只读，晋升与证据写入留在 CI | 采用：工具不写任何权威状态；写入能力明确排除 | resolved（DEC-3） |
 | U-RELEASE | 本次发布目标是内部演示、邀请测试用户还是面向真实用户上线？ | deployment | 决定发布前提与是否强制真实 staging | 自用工具，先达“内部演示 + 真实 CI 证据” | 采用：release_goal = internal_demo；真实上线前提另立 Contract | resolved（DEC-4） |
-| U-STAGING | 本仓库是否需要真实 staging 环境？ | deployment | 无 staging 时 MVP_READY 不可达 | 本 Slice 不需要 staging；Bootstrap 阶段再评估 | 采用：Bootstrap 与 MVP 阶段需要 staging 通道，本 Slice 不适用；真实远端权限未取得，列为阻塞 | deferred_with_approval（DEC-6，复查时点：Bootstrap 结束前） |
+| U-STAGING | 本仓库是否需要真实 staging 环境？ | deployment | 无 staging 时 MVP_READY 不可达 | 本 Slice 不需要 staging；Bootstrap 阶段再评估 | 采用：本仓库不设独立 staging 通道；Bootstrap 与 MVP_READY 均以 `production_like_ci`（在受保护 CI runner 上安装并运行打包产物、报告 revision 与 digest）为准。局限如实记录：这不是独立环境，也不提供容器/命名空间隔离；若日后需要真实 staging，另立 Contract 并实现隔离后端 | resolved（DEC-8，2026-10-04 owner 确认） |
+
+## DEC-8 环境变更审批边界
+
+- 确认来源：2026-10-04 本监督会话中，owner 对 staging 决策问题明确选择“承认现实：MVP_READY 用 production_like_ci（推荐）”。这是会话确认记录，不冒充外部签名或独立部署证明。
+- 变更：本仓库 Bootstrap/MVP 环境配置与 Contract 同步为 `production_like_ci`；`U-STAGING` 收敛为 resolved，旧的有界延期不再作为在途假设。
+- 保留：8 个 Required 自动验收、全部累积 Spine、`R-CORE-JOURNEYS` 人工 Review 以及原有 3 条发布前提。环境批准不等于 Review PASS，也不等于发布前提 PASS。
+- 局限：CI 安装探针只在临时目录运行保留产物，结束后清理；后续 owner 评审针对同一产物和这次运行记录，而非一个仍在线的 staging。
 
 ## Gate 结论
 
 - 未处理 unknown：无
-- 排除及延期的确认引用：DEC-5（CLI-INTERRUPT / CLI-PERMISSION / CLI-DESTRUCTIVE）、DEC-6（U-STAGING 有界延期）
-- 阻塞性产品问题：无。远端仓库与 CI 权限尚未提供，属实施阻塞而非产品未知项。
-- 下一步：起草 Contract 并跑 `check-gaps --phase contract`
+- 排除及延期的确认引用：DEC-5（CLI-INTERRUPT / CLI-PERMISSION / CLI-DESTRUCTIVE）、DEC-6（U-STAGING 有界延期）、DEC-8（U-STAGING 已由 owner 决定收敛为 production_like_ci，局限写入 Contract 与 Baseline 元数据）
+- 阻塞性产品问题：无。远端仓库与 CI 权限已具备（`verify`/`promote` 均已真实运行），首个 Baseline 已由 Promotion job 建立。
+- 下一步：跑 `check-gaps --phase mvp`，收敛剩余的人工 Review 与发布回执

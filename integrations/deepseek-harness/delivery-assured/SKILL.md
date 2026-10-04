@@ -43,7 +43,9 @@ The owner is asked at exactly three points, plus any real WHAT change:
 2. **Acceptance summary confirmation** — before implementation: about ten minutes reading
    the per-Journey results, the persistence requirements and the negative paths.
 3. **Final Journey Review** — before `MVP_READY`: the owner walks the core Journeys on the
-   named staging deployment using a fresh identity.
+   exact candidate/artifact in the named environment approved in the frozen Contract
+   (staging by default). A documented owner-approved environment exception never
+   waives this Review or turns a temporary CI installation into live staging.
 
 Ordinary HOW decisions, added tests inside the agreed semantics, and automatic promotion
 are not brought to the owner each time. Changing a product result, deleting an obligation
@@ -129,9 +131,11 @@ the acceptance, refresh Coverage and re-verify in full.
 
 Do not report a Slice as done because the local gates are green, and do not report the
 product as `MVP_READY` unless the whole Contract's Required results are implemented and
-mapped, every machine acceptance and the full Spine pass on the frozen revision, the real
-staging deployment runs that same candidate and image, the owner has completed the final
-Journey Review, and the declared release prerequisites are met.
+mapped, every machine acceptance and the full Spine pass on the frozen revision, the
+explicitly approved environment runs that same candidate and image (default staging;
+project exceptions require owner approval), the owner has completed the final Journey
+Review, and the declared release prerequisites are met. Temporary CI installation
+reports are historical observations, not proof of an instance still running.
 
 Report what is still owed, what blocked, and how much budget is left. Never widen the
 claimed scope.

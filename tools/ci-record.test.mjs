@@ -55,6 +55,14 @@ check(promotionSteps.find(s => s.name?.startsWith('Report runtime isolation')).r
 // promoting run became unattributable — a gap only visible by reading the state ref.
 const promoteStep = promotionSteps.find(s => s.env?.GH_TOKEN?.includes('BASELINE_PUSH_TOKEN'))
 check(promoteStep?.env?.DSH_CI_RUN_ID?.includes('github.run_id'), 'the promotion records the exact CI run that performed it')
+check(promote.on.workflow_dispatch.inputs.owner_approval_ref && promoteStep.env.DSH_OWNER_APPROVAL_REF === '${{ inputs.owner_approval_ref }}', 'MVP_READY consumes a typed exact owner confirmation pointer')
+check(promote.jobs['promote-baseline'].permissions.issues === 'read', 'finalization independently reads the platform owner comment')
+check(promotionSteps.some(s => s.run?.includes('DSH_STATE_REVISION=$STATE_SHA')), 'promotion pins the restored state before reassessing and CAS')
+const promotionRetention = promotionSteps.find(s => s.uses?.startsWith('actions/upload-artifact')).with.path
+check(promotionRetention.includes('mvp-finalizations') && promotionRetention.includes('reviews.yaml') && promotionRetention.includes('mvp-ready.json'), 'derived readiness and owner review are retained with promotion state')
+const promoteSource = readFileSync(join(repo, 'ci/tools/ci-promote.mjs'), 'utf8')
+check(promoteSource.includes('await historyBlockers(root)') && promoteSource.includes('auditCompletedHistory') && promoteSource.includes('audit.examined !== audit.completed'), 'promotion blocks uncollected completed and in-flight verification history')
+check(promoteSource.includes('unresolvedDiagnostics(diagnostics.wrappers, diagnostics.resolutions)') && !JSON.stringify(promotionSteps).includes('test ! -d project/ci/recording/diagnostics'), 'promotion respects immutable resolved diagnostics instead of demanding history deletion')
 const source = readFileSync(join(repo, 'ci/tools/ci-record.mjs'), 'utf8')
 check(source.includes('https://api.github.com/repos/') && source.includes('/attempts/${receipt.run_attempt}') && source.includes('await confirmReceipt'), 'consumer confirms receipt externally rather than trusting issuer')
 const receipt = { repository: 'fixture/repo', run_id: 12, run_attempt: 2 }

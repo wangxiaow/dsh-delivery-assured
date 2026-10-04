@@ -4,8 +4,8 @@ project:
 baseline_ref: refs/heads/baseline/main
 baseline_remote: origin
 slice_environment: production_like_container
-bootstrap_environment: staging
-mvp_ready_environment: staging
+bootstrap_environment: production_like_ci
+mvp_ready_environment: production_like_ci
 ci_provider: github-actions
 
 paths:

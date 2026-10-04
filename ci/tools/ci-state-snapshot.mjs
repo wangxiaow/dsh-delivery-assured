@@ -2,7 +2,7 @@ import { spawnSync } from 'node:child_process'
 import { lstatSync, readdirSync, readFileSync } from 'node:fs'
 import { dirname, isAbsolute, join, resolve } from 'node:path'
 
-const FILES = ['.agent/attempts.jsonl', 'tests/spine/manifest.yaml']
+const FILES = ['.agent/attempts.jsonl', '.agent/reviews.yaml', '.agent/STANDARD_CHANGES.yaml', 'ci/mvp-ready.json', 'tests/spine/manifest.yaml']
 const TREES = ['ci/recording', 'ci/evidence', 'ci/baseline']
 const SCOPES = [...FILES, ...TREES]
 const scoped = path => FILES.includes(path) || TREES.some(root => path === root || path.startsWith(`${root}/`))

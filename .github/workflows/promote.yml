@@ -35,6 +35,9 @@ on:
         description: Expected baseline ID, or none
         required: true
         default: none
+      owner_approval_ref:
+        description: Exact product-owner issue comment URL containing bound delivery-approval JSON (MVP_READY only)
+        required: false
   workflow_run:
     workflows: [verify]
     types: [completed]
@@ -197,6 +200,7 @@ jobs:
     permissions:
       contents: read
       actions: read
+      issues: read
     steps:
       - uses: actions/checkout@v4
         with:
@@ -239,9 +243,10 @@ jobs:
           git show HEAD:project/ci/verifier.yaml > project/ci/verifier.yaml
           git ls-remote --exit-code origin refs/heads/delivery-state/main > /dev/null
           git fetch --no-tags origin refs/heads/delivery-state/main
-          git archive FETCH_HEAD project | tar -x
+          STATE_SHA=$(git rev-parse FETCH_HEAD)
+          git archive "$STATE_SHA" project | tar -x
+          echo "DSH_STATE_REVISION=$STATE_SHA" >> "$GITHUB_ENV"
           test -f project/.agent/attempts.jsonl
-          test ! -d project/ci/recording/diagnostics || test -z "$(find project/ci/recording/diagnostics -type f -print -quit)"
           git fetch --no-tags origin refs/heads/standards/acceptance
           echo "DSH_STANDARD_REVISION=$(git rev-parse FETCH_HEAD)" >> "$GITHUB_ENV"
       - name: Report runtime isolation as a warning
@@ -258,6 +263,7 @@ jobs:
           DSH_CI_RUN_ID: ${{ github.run_id }}-${{ github.run_attempt }}
           EXPECTED_PARENT: ${{ inputs.expected_parent }}
           PROMOTION_MODE: ${{ inputs.mode }}
+          DSH_OWNER_APPROVAL_REF: ${{ inputs.owner_approval_ref }}
         run: |
           set -euo pipefail
           test -n "$GH_TOKEN"
@@ -276,5 +282,9 @@ jobs:
             project/ci/baseline/**
             project/ci/evidence/**
             project/.agent/attempts.jsonl
+            project/.agent/reviews.yaml
+            project/.agent/STANDARD_CHANGES.yaml
+            project/ci/mvp-ready.json
+            project/ci/recording/mvp-finalizations/**
             project/tests/spine/manifest.yaml
           retention-days: 90
