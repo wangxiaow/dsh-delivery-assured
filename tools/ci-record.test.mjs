@@ -50,6 +50,11 @@ const promotionSteps = promote.jobs['promote-baseline'].steps
 check(promotionSteps.findIndex(s => s.name?.startsWith('Report runtime isolation')) < promotionSteps.findIndex(s => s.env?.GH_TOKEN?.includes('BASELINE_PUSH_TOKEN')), 'isolation is reported before any baseline credential is used')
 check(!promotionSteps.some(s => s.run?.includes('PROMOTION BLOCKED')), 'unimplemented runtime isolation no longer blocks promotion (owner decision: warning plus metadata)')
 check(promotionSteps.find(s => s.name?.startsWith('Report runtime isolation')).run.includes('does not block this promotion'), 'isolation warning states the recorded, non-blocking policy')
+// The durable Baseline metadata and the spine manifest name the run that wrote them.
+// Without DSH_CI_RUN_ID the first real promotion recorded "local-dry-run" and the
+// promoting run became unattributable — a gap only visible by reading the state ref.
+const promoteStep = promotionSteps.find(s => s.env?.GH_TOKEN?.includes('BASELINE_PUSH_TOKEN'))
+check(promoteStep?.env?.DSH_CI_RUN_ID?.includes('github.run_id'), 'the promotion records the exact CI run that performed it')
 const source = readFileSync(join(repo, 'ci/tools/ci-record.mjs'), 'utf8')
 check(source.includes('https://api.github.com/repos/') && source.includes('/attempts/${receipt.run_attempt}') && source.includes('await confirmReceipt'), 'consumer confirms receipt externally rather than trusting issuer')
 const receipt = { repository: 'fixture/repo', run_id: 12, run_attempt: 2 }

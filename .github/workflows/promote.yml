@@ -252,6 +252,10 @@ jobs:
           GH_TOKEN: ${{ secrets.BASELINE_PUSH_TOKEN }}
           DSH_GITHUB_READ_TOKEN: ${{ github.token }}
           DSH_DEFAULT_BRANCH: main
+          # The baseline metadata and the spine manifest must name the run that promoted
+          # them; without this the durable record says "local-dry-run" and the promoting
+          # run becomes unattributable.
+          DSH_CI_RUN_ID: ${{ github.run_id }}-${{ github.run_attempt }}
           EXPECTED_PARENT: ${{ inputs.expected_parent }}
           PROMOTION_MODE: ${{ inputs.mode }}
         run: |

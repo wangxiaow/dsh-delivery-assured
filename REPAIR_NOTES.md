@@ -104,6 +104,29 @@ build gate 新增两项：host trust boundary（需要 DSH 运行时）与一键
 
 **仍未验证**：以上只能证明"插件不会再发出坏 schema"，不能证明在真实宿主里工具**一定能注册成功**——那需要一次干净启动（关闭应用 → 安装 → 启动）才能确认，不能再靠热改 profile 去试。
 
+## 真实 CI 闭环（首次，2026-10-04）
+
+修复推上远端后跑通真实链路（`main` = `standards/acceptance` = `b4e127e`）：
+
+| 步骤 | run | 结果 |
+|---|---|---|
+| `promote.yml` → `bootstrap-state`（owner `wangxiaow`，seed `owner-approved-empty`） | `37178817434` | 成功，创建 `refs/heads/delivery-state/main` |
+| `verify.yml`（candidate `b4e127e`、parent none、Slice S1） | `37178837431` | **成功 43s**：六个门 passed/not_applicable，8/8 Required 用例真实执行，产出 Evidence |
+| collector（`workflow_run` 自动触发） | `37178879661` | 成功，把精确 attempt 写入 durable state |
+| `promote.yml` → `promote-baseline`（`expected_parent=none`） | `37178891695` | 成功，晋升 **BL-000**，`refs/heads/baseline/main` = `b4e127e` |
+
+durable state（`refs/heads/delivery-state/main` = `f019d86b`）现含：`ci/baseline/BL-000.json`、`ci/evidence/*`（2 条）、`ci/recording/bootstrap.json` 与 `receipts/37178837431-1.json`、`.agent/attempts.jsonl`、`tests/spine/manifest.yaml`（累积 8 个 case id）。
+
+BL-000 记录：`machine_verified_outcomes` 8 项、`remaining_outcomes` 3 项、`manual_reviews_pending` 1 项；`runtime_isolation.verified: false` 并带"仅告警、不阻塞晋升"的说明（owner 决定的可见落点）。
+
+**新会话恢复实证**：把该状态覆盖到 `b4e127e` 的干净 clone 上运行 `resume --offline` → `baseline: BL-000 @ b4e127ec`、`verified 8`、`budget attempts 1/8`、上一条尝试带真实 CI run 与 hypothesis。跨会话不再失忆，本地读数同时如实标注"来源未经本地确认"。
+
+### 首次真实晋升暴露的缺陷：Baseline 元数据没有记录晋升它的 run
+
+读 durable state 时发现 `BL-000.json` 的 `promotion_run_id` 与 spine 的 `updated_by` 都是 `local-dry-run`：`promote.yml` 的晋升步骤 env 里没有 `DSH_CI_RUN_ID`，`ci-promote.mjs` 因此回落到该默认值。证据本身（`evidence_refs`、`receipts/*`）是正确的，缺的是**权威记录对自己的来源指认**——只有读状态引用才会发现，工作流跑绿并不会报。
+
+修复：晋升步骤补 `DSH_CI_RUN_ID: ${{ github.run_id }}-${{ github.run_attempt }}`，并在 [ci-record 回归](tools/ci-record.test.mjs) 增加断言（100 项）。已写入的 BL-000 记录不重写——不篡改权威记录，缺口如实记在此处；BL-001 起携带真实 run。
+
 ## 尚欠工程与外部实证
 
 1. **可运行、可独立实证的隔离后端仍未实现。** 已增加[限制型请求模块](ci/tools/ci-isolation.mjs)：固定 digest、non-root、无网络、只读输入、独立输出、资源限制、cap-drop、无主机环境继承及 shell；注入执行器的零退出始终不授予 runtime trust 或 Promotion。这个模块没有真实 executor，没有锁定/独立证明实际 mount 和 namespace；现有 verifier 的项目内写入也尚未适配只读输入，不能把请求参数或合成测试当作端到端可用后端。 本机 Get-Command docker 未发现 Docker CLI，未连接 daemon 或拉取镜像，不能以本机现有环境实证容器隔离。 候选和 verifier 目前不能凭复制 canonical 文件获得进程/文件系统隔离保证。collector 忽略候选自行提交的 trust 字段，仅将 transport 标为已确认，runtime_isolation_verified 固定 false；这些观察不能关闭 Coverage。**本轮已按 owner 决定把隔离从晋升硬门禁降级为告警：** `promotion.yml` 不再无条件阻塞，告警写入 Baseline 元数据 `runtime_isolation`，transport/仓库/run 身份/revision 来源仍阻塞。真实隔离后端依旧是欠账，不能用自报布尔值替代。
