@@ -95,6 +95,16 @@ function main() {
   human.push(
     `baseline     : ${localBaseline ? `${localBaseline.baseline_id} @ ${String(localBaseline.code_revision).slice(0, 12)} (${baselineRef})` : '(none recorded locally)'}`,
   )
+  // A checkout that is not the Baseline's revision makes every record stale by binding.
+  // Without this line a new session reads "verified 0 / everything stale" and concludes
+  // the project regressed, when the real answer is "this working tree is not the
+  // verified revision".
+  const baselineRevisionMismatch = Boolean(localBaseline && candidate && String(localBaseline.code_revision) !== candidate)
+  if (baselineRevisionMismatch) {
+    human.push(
+      `               this checkout (${candidate.slice(0, 12)}) is not ${localBaseline.baseline_id}'s verified revision (${String(localBaseline.code_revision).slice(0, 12)}); records below bind that revision and read stale here`,
+    )
+  }
   human.push(
     `remote ref   : ${opts.offline ? '(not read)' : remoteState.sha ? `${remoteState.sha.slice(0, 12)} on ${remote}` : `absent on ${remote}`}`,
   )
@@ -157,6 +167,7 @@ function main() {
             baseline_id: localBaseline.baseline_id,
             code_revision: localBaseline.code_revision,
             verification_scope: localBaseline.verification_scope,
+            checkout_is_verified_revision: !baselineRevisionMismatch,
           }
         : null,
       evidence: {
