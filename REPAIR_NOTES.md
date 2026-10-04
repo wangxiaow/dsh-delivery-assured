@@ -150,6 +150,15 @@ the protected baseline ref was not moved.
 
 修复后在真实 CI 重跑同一条证据的晋升（run `37181131525`）→ **BL-001 晋升成功**：`refs/heads/baseline/main` = `038cb0ae`（第三轮候选），`parent_baseline: BL-000`（首次真实父基线链），`promotion_run_id: 37181131525-1`（归属修复生效），evidence `ci:verify:37180552926-1`，机验 8 项 / 剩余 3 项，Spine 8 个 case 且 `updated_by` 指向该晋升 run。至此链路为 **verify → collector → promote（带父基线与 Spine 单调累积）**，每条权威记录都指认自己的 run。
 
+### 平台保护已开启（2026-10-04）
+
+对 `main`、`standards/acceptance`、`baseline/main`、`delivery-state/main` 开启分支保护：`enforce_admins=true`、`allow_force_pushes=false`、`allow_deletions=false`。与 v0.5"保护引用不得被强推覆盖"一致：非快进的晋升会被平台拒绝，`ci-promote` 也会如实报 `PROMOTION FAILED the protected ref was not advanced`。四个写入方本来就都是追加式快进（[ci-record.persistState](ci/tools/ci-record.mjs) 以 `-p parent` 建提交、`ci-promote` 推候选 revision、standards-update 推 main 的提交），`--force-with-lease` 只作并发守卫，因此功能不受影响——本次记录提交就是保护开启后的普通快进推送。
+
+需要临时解除（例如不得不在 `main` 上改写历史）：
+`gh api -X DELETE repos/wangxiaow/dsh-delivery-assured/branches/main/protection`
+
+`Contract.deployment.release_prerequisites` 还要求"分支保护要求 verify 必需检查通过"：那一步会给 `main` 加必需状态检查并强制 PR 流程，会改变本仓库的推送习惯，**尚未开启**，等 owner 决定。
+
 
 ## 尚欠工程与外部实证
 
