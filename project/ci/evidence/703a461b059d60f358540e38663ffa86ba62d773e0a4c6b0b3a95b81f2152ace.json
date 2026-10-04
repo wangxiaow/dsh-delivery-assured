@@ -1,0 +1,190 @@
+{
+  "evidence_id": "ci:verify:37178837431-1",
+  "convergence": {
+    "hypothesis": "首次完整 Required 集合：S1 验收在冻结候选 b4e127e 上真实执行",
+    "root_cause_key": "fixed-candidate-verification",
+    "slice_key": "S1"
+  },
+  "scope": {
+    "slice_id": "S1",
+    "slice_key": "S1",
+    "obligation_ids": [
+      "J-DELIVERY-STATUS",
+      "C-STATUS-COMPUTATION",
+      "J-DELIVERY-STATUS.ready",
+      "J-DELIVERY-STATUS.rejected",
+      "C-INPUT-DIAGNOSTICS",
+      "BR-STATUS-DERIVED",
+      "BR-EVIDENCE-NOT-LOCAL",
+      "J-CI-AUTHORITY",
+      "J-CI-AUTHORITY.local_only",
+      "J-CI-AUTHORITY.blocked_without_ci",
+      "C-BOOTSTRAP"
+    ],
+    "required_case_ids": [
+      "A-BOOTSTRAP-CLEAN-BOOT",
+      "A-CLI-BLOCKED-WITHOUT-CI",
+      "A-CLI-CRITICAL-NOT-LOCAL-PASS",
+      "A-CLI-DOES-NOT-WRITE",
+      "A-CLI-INPUT-REJECTED",
+      "A-CLI-STALE-EVIDENCE",
+      "A-CLI-STATE-DONE-NOT-COMPLETION",
+      "A-CLI-STATUS-JSON"
+    ]
+  },
+  "bindings": {
+    "code_revision": "b4e127ec9ada91aac3a4d7f26ed7190f154bf32a",
+    "contract_revision": "b4e127ec9ada91aac3a4d7f26ed7190f154bf32a",
+    "contract_digest": "b7177e1dcc547f8b9467253057cc393c0c193b55a730c46bd95d50795ca9aa33",
+    "acceptance_revision": "b4e127ec9ada91aac3a4d7f26ed7190f154bf32a",
+    "acceptance_manifest_digest": "e8191943649f50a859d67dbab12b33a5c0c7b2af1f3b814d5c7a702126860a02",
+    "acceptance_digest": "e87147b3bca11e0a8d765544fccd40477b3d6fe94c68d980ab36f3b279289c4c",
+    "verifier_config_revision": "b4e127ec9ada91aac3a4d7f26ed7190f154bf32a",
+    "verifier_config_digest": "7c5b3dc45b28994effaed9db61c7209ae96c03e1266e0bf76e605c133f215b30",
+    "dependency_lock_digest": null,
+    "migration_digest": null,
+    "spine_manifest_digest": "ef1f4af883eaf5b8a32c8d5d77126f309b4698f939dee654e4f89a30eec57bc6",
+    "slice_manifest_digest": "5f80680f9a6f022069fef1feedd9a79cdf6227056a70beb2032aca89b8e54a26",
+    "parent_baseline": null
+  },
+  "environment": {
+    "kind": "production_like_ci",
+    "image_digest": "sha256:5140f5c739de100cc040954de9bedc9d5dfd5cbd6ef70ece25573954f10cdbd1",
+    "config_fingerprint": "7c5b3dc45b28994effaed9db61c7209ae96c03e1266e0bf76e605c133f215b30",
+    "fixture_revision": "b4e127ec9ada91aac3a4d7f26ed7190f154bf32a",
+    "deployment_id": "artifact-install-37178837431-1",
+    "deployed_code_revision": "b4e127ec9ada91aac3a4d7f26ed7190f154bf32a",
+    "deployed_image_digest": "sha256:5140f5c739de100cc040954de9bedc9d5dfd5cbd6ef70ece25573954f10cdbd1"
+  },
+  "execution": {
+    "ci_run_id": "37178837431-1",
+    "started_at": "2026-10-04T05:05:03.611Z",
+    "finished_at": "2026-10-04T05:05:21.076Z",
+    "result": "PASS",
+    "required_cases": 8,
+    "executed_cases": 8,
+    "skipped_required_cases": 0,
+    "case_results": [
+      {
+        "case_id": "A-BOOTSTRAP-CLEAN-BOOT",
+        "outcome": "passed",
+        "duration_ms": 368,
+        "message": ""
+      },
+      {
+        "case_id": "A-CLI-BLOCKED-WITHOUT-CI",
+        "outcome": "passed",
+        "duration_ms": 155,
+        "message": ""
+      },
+      {
+        "case_id": "A-CLI-CRITICAL-NOT-LOCAL-PASS",
+        "outcome": "passed",
+        "duration_ms": 495,
+        "message": ""
+      },
+      {
+        "case_id": "A-CLI-DOES-NOT-WRITE",
+        "outcome": "passed",
+        "duration_ms": 336,
+        "message": ""
+      },
+      {
+        "case_id": "A-CLI-INPUT-REJECTED",
+        "outcome": "passed",
+        "duration_ms": 279,
+        "message": ""
+      },
+      {
+        "case_id": "A-CLI-STALE-EVIDENCE",
+        "outcome": "passed",
+        "duration_ms": 310,
+        "message": ""
+      },
+      {
+        "case_id": "A-CLI-STATE-DONE-NOT-COMPLETION",
+        "outcome": "passed",
+        "duration_ms": 314,
+        "message": ""
+      },
+      {
+        "case_id": "A-CLI-STATUS-JSON",
+        "outcome": "passed",
+        "duration_ms": 429,
+        "message": ""
+      }
+    ],
+    "gate_results": [
+      {
+        "gate": "build",
+        "outcome": "passed",
+        "reason": "",
+        "command": "node scripts/verify-build.mjs",
+        "exit_code": 0,
+        "duration_ms": 13349,
+        "undeclared": false
+      },
+      {
+        "gate": "clean_boot",
+        "outcome": "passed",
+        "reason": "",
+        "command": "node scripts/check-clean-boot.mjs",
+        "exit_code": 0,
+        "duration_ms": 451,
+        "undeclared": false
+      },
+      {
+        "gate": "persistence_migration",
+        "outcome": "not_applicable",
+        "reason": "只读 CLI 无持久化与迁移入口；migrations/ 不存在，本 gate 明确不适用（v0.5 §13.3）",
+        "command": "",
+        "exit_code": null,
+        "duration_ms": 0,
+        "undeclared": false
+      },
+      {
+        "gate": "slice_acceptance",
+        "outcome": "passed",
+        "reason": "",
+        "command": "node scripts/run-acceptance.mjs",
+        "exit_code": 0,
+        "duration_ms": 3052,
+        "undeclared": false
+      },
+      {
+        "gate": "regression_spine",
+        "outcome": "passed",
+        "reason": "",
+        "command": "node scripts/verify-spine.mjs",
+        "exit_code": 0,
+        "duration_ms": 289,
+        "undeclared": false
+      },
+      {
+        "gate": "deployment",
+        "outcome": "passed",
+        "reason": "",
+        "command": "node scripts/verify-deployment.mjs",
+        "exit_code": 0,
+        "duration_ms": 266,
+        "undeclared": false
+      }
+    ],
+    "artifacts": [
+      ".agent/evidence/acceptance-results.json"
+    ]
+  },
+  "issuer": {
+    "identity": "ci:verify"
+  },
+  "structural_notes": [
+    "warn:EMPTY_SPINE:the regression spine is empty; after Baseline #0 the CI accumulates every verified case here"
+  ],
+  "spine_manifest_digest": "ef1f4af883eaf5b8a32c8d5d77126f309b4698f939dee654e4f89a30eec57bc6",
+  "spine_case_ids": [],
+  "blocking": [],
+  "trust": {
+    "transport_verified": true,
+    "runtime_isolation_verified": false
+  }
+}
