@@ -127,7 +127,7 @@ BL-000 记录：`machine_verified_outcomes` 8 项、`remaining_outcomes` 3 项�
 
 修复：晋升步骤补 `DSH_CI_RUN_ID: ${{ github.run_id }}-${{ github.run_attempt }}`，并在 [ci-record 回归](tools/ci-record.test.mjs) 增加断言（100 项）。已写入的 BL-000 记录不重写——不篡改权威记录，缺口如实记在此处；BL-001 起携带真实 run。
 
-### 待修（已定位，尚未修）：晋升过一次之后，第二个 Baseline 永远晋升不了
+### 已修：晋升过一次之后第二个 Baseline 晋升不了
 
 第二轮/第三轮真实证据都在，但 `promote-baseline`（`expected_parent=BL-000`）被拒：
 
@@ -136,18 +136,17 @@ PROMOTION BLOCKED convergence budget or ledger is blocked: []
 the protected baseline ref was not moved.
 ```
 
-机制（读 durable state + 代码确认）：`attemptFromCI` 把 `standard_digest = standardDigest(bindings, environment)` 记进预算账本，而该摘要**包含 `spine_manifest_digest`**。BL-000 晋升时把 8 个 case 累积进 Spine，标准摘要随之从 `3e37a0c6…` 变成 `1e62a651…`（acceptance/contract/verifier 摘要都没变，case 集也没变）。于是：
+机制（读 durable state + 代码确认）：`attemptFromCI` 把 `standard_digest = standardDigest(bindings, environment)` 记进预算账本，而该摘要**包含 `spine_manifest_digest`**。BL-000 晋升时把 8 个 case 累积进 Spine，标准摘要随之从 `3e37a0c6…` 变成 `1e62a651…`（acceptance/contract/verifier 摘要都没变，case 集也没变）。于是 `sameStandard(最新 pass, 首轮 pinned)` 恒为 false → `fixedByKey` 既不 advance 也不 rebase → `terminal_passed=false` → 同根因达 3 → `requires_replan=true` → 阻塞。**Spine 累积是系统自身推进的结果，却被当成"标准变了"，导致 Baseline #0 之后无法再晋升任何候选。**
 
-- `sameStandard(最新 pass, 首轮 pinned)` = false → `fixedByKey` 既不 advance 也不 rebase；
-- `terminalPassed = false` → 同根因计数达 3 → `requiresReplan = true` → `blocked = true`，而 `invalid_entries` 为空，日志只说"blocked"不说原因。
+修复（owner 决定：Spine 累积自动重基）：
+1. 比较身份拆成组件：[comparisonDigest](packages/delivery-assured/scripts/lib/convergence.mjs) 只含 contract/acceptance/verifier/依赖/migration/slice 摘要，**不含 Spine**；账本条目另记 `comparison_digest` 与 `spine_digest`，`standard_digest` 保留用于兼容与审计。
+2. 旧条目**不改写**：缺少 `comparison_digest` 时从它引用的不可变 Evidence 现场派生比较身份（`identityOf`）；两侧处于不同身份空间时退回完整摘要比较，避免"比较身份 vs 完整摘要"永远不等的假阻塞。
+3. Spine **只能增长**：某次尝试丢掉了此前累积的 case 记 `Spine shrank …` 并置 `history_known=false`、阻塞——削弱不会被放过；增长则记入 `spine_accumulations` 供审计。
+4. 诊断补齐：`ci-promote` 阻塞时分别输出 `invalid_entries`/`budget_blocked`/`requires_replan`/`terminal_passed`/`critical_open`/counted/limit，不再只打印一个空数组。
 
-**含义**：Spine 累积是系统自身推进的结果，却被当成"标准变了、窗口不可比"，结果是 **Baseline #0 之后无法再晋升任何候选**——与之前那个死锁同类。fail-closed 本身是对的（`baseline/main` 未被写坏，账本里三次尝试如实记录）。
+**差点踩到的兼容陷阱**：拆分时我把 `standardDigest` 的键顺序改了（spine 与 slice 互换），摘要随之变化——用真实账本复算时立刻报出两条 `CI summary mismatch: standard_digest`。历史账本里每个条目的摘要都是按原顺序算的，所以键顺序现在是显式常量 `STANDARD_KEYS` 并附注释。这个只有拿真实状态复算才会发现，单元测试全绿也照样漏。
 
-下一轮修法（需要 owner 确认，因为它动的是 §9.2/§9.4 的预算语义）：
-1. 把"可比性"从单一 `standard_digest` 拆成**组件**：contract/acceptance/verifier 摘要 + case 集 + required_total 构成 `comparison_digest`；Spine 摘要单独记录（它是要被保护的对象，不是比较身份）。
-2. 当差异**仅**来自"上一次晋升累积的 Spine 且是原集合的超集"时，允许**自动重基**（记录 rebase 事件），而不是阻塞；标准被削弱（acceptance/contract/verifier 变化且无批准）仍必须阻塞。
-3. 诊断补齐：`blocked` 时必须分别输出 `invalid_entries`、`budget_blocked`、`requires_replan`、`critical_open`，不能只打印空数组。
-4. 回归：构造"晋升累积 Spine → 新候选 PASS → 仍 terminal_passed"的链条，以及"摘要被削弱仍阻塞"的反例。
+验证：convergence 套件 27/27（含新增"Spine 累积不破坏比较窗口""比较身份变化不被静默折叠""Spine 只能增长"）；**用 `delivery-state/main` 的真实账本复算** → `terminal_passed: true`、`blocked: false`、`invalid_entries: []`、`spine_accumulations` 报出 8 项。
 
 
 ## 尚欠工程与外部实证

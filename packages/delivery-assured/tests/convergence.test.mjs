@@ -268,6 +268,72 @@ test('approved standard rebase preserves history and allows the last genuine PAS
   assert.match(compute(m).invalid_entries.map(e => e.message).join(), /missing approval/)
 })
 
+// A ledger entry is checked against the Evidence it references, so a fixture entry has
+// to describe the same execution: result, timestamps, counts and metadata.
+function record(id, bindingPatch, spineCaseIds, { result = 'PASS', finishedAt = '2026-01-01T00:00:03Z' } = {}) {
+  const base = evidence()
+  const caseResults = result === 'PASS'
+    ? [{ case_id: 'A-1', outcome: 'passed' }, { case_id: 'A-2', outcome: 'passed' }]
+    : [{ case_id: 'A-1', outcome: 'passed' }, { case_id: 'A-2', outcome: 'failed' }]
+  return {
+    ...base,
+    evidence_id: id,
+    bindings: { ...bindings, ...bindingPatch },
+    spine_case_ids: spineCaseIds,
+    execution: { ...base.execution, result, finished_at: finishedAt, case_results: caseResults },
+  }
+}
+function ledger(n, entry, { result = 'failed', requiredPassed = 1, spineFailures = 1 } = {}) {
+  return attempt(n, {
+    ci_ref: entry.evidence_id,
+    hypothesis: 'CI hypothesis',
+    at: entry.execution.finished_at,
+    standard_digest: standardDigest(entry.bindings, entry.environment),
+    result,
+    required_passed: requiredPassed,
+    spine_failures: spineFailures,
+  })
+}
+
+test('a promotion that accumulates the Spine does not break the comparison window', () => {
+  // The second attempt runs after Baseline #0 accumulated a Spine case: the full
+  // binding digest changes (spine_manifest_digest) while the comparison identity does
+  // not. Before the split this left the pinned comparison unreachable, `terminal_passed`
+  // false, and every later promotion blocked by the same-root-cause counter.
+  const first = record('ci:legacy', { spine_manifest_digest: '1'.repeat(64) }, [], { result: 'FAIL' })
+  const second = record('ci:current', { spine_manifest_digest: '2'.repeat(64) }, ['A-2'], { finishedAt: '2026-01-01T00:00:04Z' })
+  const m = model([ledger(1, first), ledger(2, second, { result: 'passed', requiredPassed: 2, spineFailures: 0 })])
+  m.evidence = [first, second]
+  m.currentBindings = { ...second.bindings }
+  const b = compute(m)
+  assert.equal(b.terminal_passed, true)
+  assert.equal(b.blocked, false)
+  assert.deepEqual(b.changed_comparison, [])
+  assert.deepEqual(b.spine_accumulations, [{ attempt_id: 'A2', added: ['A-2'] }])
+})
+
+test('an attempt whose comparison identity changed is not silently comparable', () => {
+  const first = record('ci:legacy', { spine_manifest_digest: '1'.repeat(64) }, [], { result: 'FAIL' })
+  const weakened = record('ci:weakened', { acceptance_digest: 'f'.repeat(64), spine_manifest_digest: '2'.repeat(64) }, ['A-2'], { finishedAt: '2026-01-01T00:00:04Z' })
+  const m = model([ledger(1, first), ledger(2, weakened, { result: 'passed', requiredPassed: 2, spineFailures: 0 })])
+  m.evidence = [first, weakened]
+  m.currentBindings = { ...weakened.bindings }
+  const b = compute(m)
+  assert.equal(b.terminal_passed, false)
+  assert.deepEqual(b.changed_comparison, ['A2'])
+})
+
+test('the Spine may only grow: a dropped case is reported', () => {
+  const withSpine = record('ci:with-spine', { spine_manifest_digest: '2'.repeat(64) }, ['A-2'])
+  const withoutSpine = record('ci:dropped', { spine_manifest_digest: '3'.repeat(64) }, [], { finishedAt: '2026-01-01T00:00:04Z' })
+  const m = model([ledger(1, withSpine, { result: 'passed', requiredPassed: 2, spineFailures: 0 }), ledger(2, withoutSpine, { result: 'passed', requiredPassed: 2, spineFailures: 0 })])
+  m.evidence = [withSpine, withoutSpine]
+  const b = compute(m)
+  assert.match(b.invalid_entries.map((e) => e.message).join(' | '), /Spine shrank at A2: dropped A-2/)
+  assert.equal(b.history_known, false)
+  assert.equal(b.blocked, true)
+})
+
 test('both CLIs use only shared convergence budget computation', () => {
   for (const name of ['attempts', 'resume']) {
     const source = readFileSync(new URL(`../scripts/${name}.mjs`, import.meta.url), 'utf8')

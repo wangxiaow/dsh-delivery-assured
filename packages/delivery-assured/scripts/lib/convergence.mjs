@@ -4,7 +4,7 @@ import { classifyEvidence, caseOutcomeFromEvidence } from './model.mjs'
 import { requiredCaseIds } from './selection.mjs'
 
 const RESULTS = new Set(['passed', 'failed', 'blocked', 'infra_aborted'])
-const FIELDS = new Set(['attempt_id', 'slice_id', 'slice_key', 'at', 'root_cause_key', 'hypothesis', 'result', 'required_passed', 'required_total', 'spine_failures', 'critical_violations', 'ci_ref', 'note', 'standard_digest', 'required_case_ids', 'case_set_digest', 'comparison_approval_ref', 'replan'])
+const FIELDS = new Set(['attempt_id', 'slice_id', 'slice_key', 'at', 'root_cause_key', 'hypothesis', 'result', 'required_passed', 'required_total', 'spine_failures', 'critical_violations', 'ci_ref', 'note', 'standard_digest', 'comparison_digest', 'spine_digest', 'required_case_ids', 'case_set_digest', 'comparison_approval_ref', 'replan'])
 const REPLAN_FIELDS = new Set(['slice_id', 'falsified_assumption', 'evidence_refs', 'previous_approach', 'new_approach', 'next_discriminating_checks', 'preserved_obligations', 'scope_changed'])
 const text = (v) => typeof v === 'string' && v.trim().length > 0
 const ids = (v) => Array.isArray(v) && v.length > 0 && v.every(text) && new Set(v).size === v.length
@@ -15,11 +15,40 @@ export function caseSetDigest(caseIds) {
   return sha256(JSON.stringify([...caseIds].sort()))
 }
 
-export function standardDigest(bindings, environment) {
-  const keys = ['contract_digest', 'acceptance_manifest_digest', 'acceptance_digest', 'verifier_config_digest', 'dependency_lock_digest', 'migration_digest', 'spine_manifest_digest', 'slice_manifest_digest']
+/** Bindings that define the comparison identity of a verification attempt. */
+export const COMPARISON_KEYS = ['contract_digest', 'acceptance_manifest_digest', 'acceptance_digest', 'verifier_config_digest', 'dependency_lock_digest', 'migration_digest', 'slice_manifest_digest']
+/** The accumulated-Spine digest is protected, but it is not part of the identity. */
+export const SPINE_KEY = 'spine_manifest_digest'
+/**
+ * Key order is part of the digest, and every historical ledger entry stored the digest
+ * of exactly this list. Reordering it would report every past attempt as a summary
+ * mismatch — a migration disguised as a code cleanup.
+ */
+export const STANDARD_KEYS = ['contract_digest', 'acceptance_manifest_digest', 'acceptance_digest', 'verifier_config_digest', 'dependency_lock_digest', 'migration_digest', 'spine_manifest_digest', 'slice_manifest_digest']
+
+function digestOf(keys, bindings, environment) {
   if (keys.some((k) => !Object.hasOwn(bindings || {}, k) || (!text(bindings[k]) && !(bindings[k] === null && ['dependency_lock_digest', 'migration_digest'].includes(k))))) throw new InputError('standard bindings are missing or unknown')
   const env = environment ? Object.fromEntries(['kind', 'config_fingerprint', 'fixture_revision'].map((k) => [k, environment[k] ?? null])) : null
   return sha256(JSON.stringify({ bindings: Object.fromEntries(keys.map((k) => [k, bindings[k] ?? null])), environment: env }))
+}
+
+export function standardDigest(bindings, environment) {
+  return digestOf(STANDARD_KEYS, bindings, environment)
+}
+
+/**
+ * The digest two attempts must share to be comparable.
+ *
+ * It deliberately excludes the accumulated Spine. A promotion adds the cases it just
+ * verified to the Spine, so after every promotion the full binding digest changes —
+ * and when that digest *was* the comparison identity, the next attempt could never be
+ * compared with the pinned one: the window never re-pinned, `terminal_passed` stayed
+ * false, and the same-root-cause counter blocked every later promotion. The Spine is
+ * the thing being protected, not the identity of the standard; it is tracked
+ * separately and may only grow.
+ */
+export function comparisonDigest(bindings, environment) {
+  return digestOf(COMPARISON_KEYS, bindings, environment)
 }
 
 // Aliases are declared in Slice lineage, never inferred from a requested name.
@@ -51,6 +80,7 @@ export function validateAttempt(entry, model) {
     return problems
   }
   for (const field of ['root_cause_key', 'standard_digest']) if (!text(entry[field])) problems.push(`missing ${field}`)
+  for (const field of ['comparison_digest', 'spine_digest']) if (entry[field] !== undefined && !text(entry[field])) problems.push(`invalid ${field}`)
   for (const field of ['required_passed', 'required_total', 'spine_failures']) if (!integer(entry[field])) problems.push(`invalid or missing ${field}`)
   if (entry.required_total === 0 || entry.required_passed > entry.required_total) problems.push('invalid required counts')
   if (!Array.isArray(entry.critical_violations) || !entry.critical_violations.every(text)) problems.push('missing critical_violations')
@@ -97,6 +127,8 @@ export function attemptFromCI(record, model, metadata = {}) {
     root_cause_key: meta.root_cause_key, hypothesis: meta.hypothesis,
     result: status === 'PASS' ? 'passed' : status === 'INFRA_ABORTED' ? 'infra_aborted' : status === 'BLOCKED' ? 'blocked' : 'failed',
     standard_digest: standardDigest(record.bindings, record.environment), required_case_ids: cases,
+    comparison_digest: comparisonDigest(record.bindings, record.environment),
+    spine_digest: record.bindings?.[SPINE_KEY],
     required_passed: passed, required_total: cases.length,
     spine_failures: cases.filter((id) => spineIds.has(id) && resultMap.get(id).outcome !== 'passed').length,
     critical_violations: cases.filter((id) => criticalIds.has(id) && resultMap.get(id).outcome !== 'passed'),
@@ -176,7 +208,51 @@ export function computeConvergence(model, { slice = null, logExists = existsSync
   const fixedByKey = new Map()
   const comparisonRebases = []
   const set = (x) => ids(x.required_case_ids) ? caseSetDigest(x.required_case_ids) : x.case_set_digest
-  const sameStandard = (a, b) => a.standard_digest === b.standard_digest && set(a) === set(b) && a.required_total === b.required_total
+  // Ledger entries written before the comparison identity was split carry only the
+  // full digest. Their identity is re-derived from the immutable Evidence they
+  // reference — never by rewriting the ledger, which is an authority record.
+  const evidenceFor = (entry) => (model.evidence || []).find((r) => r.evidence_id === entry.ci_ref)
+  // Two identities exist in the ledger: the split comparison identity (new entries,
+  // and old entries whose Evidence is available to derive it from) and the whole
+  // binding digest (hand-written or evidence-less entries). Entries are comparable
+  // when they speak the same identity; across the two spaces only the full digest is
+  // common currency, so that is what gets compared — never a comparison digest against
+  // a full digest, which can never be equal.
+  const identityOf = (x) => {
+    if (text(x.comparison_digest)) return { space: 'comparison', value: x.comparison_digest }
+    const record = evidenceFor(x)
+    if (record?.bindings) {
+      try { return { space: 'comparison', value: comparisonDigest(record.bindings, record.environment) } } catch { /* fall through */ }
+    }
+    return { space: 'standard', value: x.standard_digest }
+  }
+  const sameIdentity = (a, b) => {
+    const left = identityOf(a)
+    const right = identityOf(b)
+    return left.space === right.space ? left.value === right.value : a.standard_digest === b.standard_digest
+  }
+  const spineOf = (x) => {
+    const record = evidenceFor(x)
+    return Array.isArray(record?.spine_case_ids) ? [...record.spine_case_ids].sort() : null
+  }
+  const sameStandard = (a, b) => sameIdentity(a, b) && set(a) === set(b) && a.required_total === b.required_total
+  // The Spine may only grow. A promotion accumulates the cases it verified; an attempt
+  // that *drops* a previously accumulated case is a weakening, and it is reported as
+  // invalid so the budget cannot look healthy while a proven capability disappeared.
+  const spineAccumulations = []
+  const spineByKey = new Map()
+  for (const a of attempts) {
+    const spine = spineOf(a)
+    if (spine === null) continue
+    const previous = spineByKey.get(a.slice_key)
+    if (previous) {
+      const dropped = previous.filter((id) => !spine.includes(id))
+      if (dropped.length > 0) invalid.push({ line: 0, message: `Spine shrank at ${a.attempt_id}: dropped ${dropped.join(', ')}` })
+      const added = spine.filter((id) => !previous.includes(id))
+      if (added.length > 0) spineAccumulations.push({ attempt_id: a.attempt_id, added })
+    }
+    spineByKey.set(a.slice_key, spine)
+  }
   for (const a of attempts) {
     const root = `${a.slice_key}:${a.root_cause_key}`
     byRoot.set(root, (byRoot.get(root) || 0) + 1)
@@ -217,5 +293,5 @@ export function computeConvergence(model, { slice = null, logExists = existsSync
   const blocked = invalid.length > 0 || budgetBlocked || requiresReplan || criticalOpen.length > 0
   const fixedComparison = Object.fromEntries([...fixedByKey].map(([k, a]) => [k, { standard_digest: a.standard_digest, case_set_digest: set(a), required_total: a.required_total }]))
   const changedComparison = attempts.filter((a) => !sameStandard(a, fixedByKey.get(a.slice_key))).map((a) => a.attempt_id)
-  return { limits, slice_key: key, fixed_comparison: fixedComparison, changed_comparison: changedComparison, comparison_rebases: comparisonRebases, total: attempts.length, counted: attempts.length, replans, infra_aborted: selected.filter((e) => !e?.replan && e?.result === 'infra_aborted').length, history_known: invalid.length === 0, remaining: invalid.length ? null : Math.max(0, limits.total_attempt_limit - attempts.length), per_root_cause: Object.fromEntries(byRoot), maxSameRootCause, max_same_root_cause: maxSameRootCause, noProgressStreak, progress: { requiredTrend: attempts.map((a) => a.required_passed), spineTrend: attempts.map((a) => a.spine_failures), noProgressStreak }, oscillation, terminal_passed: terminalPassed, requiresReplan, requires_replan: requiresReplan, budget_blocked: budgetBlocked, blocked, critical_open: criticalOpen, invalid_entries: invalid, last_attempt: last || null, diagnostic_only: true }
+  return { limits, slice_key: key, fixed_comparison: fixedComparison, changed_comparison: changedComparison, comparison_rebases: comparisonRebases, spine_accumulations: spineAccumulations, total: attempts.length, counted: attempts.length, replans, infra_aborted: selected.filter((e) => !e?.replan && e?.result === 'infra_aborted').length, history_known: invalid.length === 0, remaining: invalid.length ? null : Math.max(0, limits.total_attempt_limit - attempts.length), per_root_cause: Object.fromEntries(byRoot), maxSameRootCause, max_same_root_cause: maxSameRootCause, noProgressStreak, progress: { requiredTrend: attempts.map((a) => a.required_passed), spineTrend: attempts.map((a) => a.spine_failures), noProgressStreak }, oscillation, terminal_passed: terminalPassed, requiresReplan, requires_replan: requiresReplan, budget_blocked: budgetBlocked, blocked, critical_open: criticalOpen, invalid_entries: invalid, last_attempt: last || null, diagnostic_only: true }
 }

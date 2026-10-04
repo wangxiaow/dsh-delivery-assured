@@ -344,7 +344,19 @@ async function main() {
     promotedAttempt = attemptFromCI(evidence, model)
     model.attempts = [...model.attempts.filter((entry) => entry.ci_ref !== evidence.evidence_id), promotedAttempt]
     const budget = computeConvergence(model, { slice: evidence.scope.slice_id, candidate: evidence.bindings.code_revision, parentBaseline: parentId })
-    if (budget.blocked) blockers.push(`convergence budget or ledger is blocked: ${JSON.stringify(budget.invalid_entries)}`)
+    // Name every reason the budget is blocked. Reporting only `invalid_entries` once
+    // produced "blocked: []" and the cause had to be reconstructed by hand.
+    if (budget.blocked) {
+      blockers.push(`convergence budget or ledger is blocked: ${JSON.stringify({
+        invalid_entries: budget.invalid_entries,
+        budget_blocked: budget.budget_blocked,
+        requires_replan: budget.requires_replan,
+        terminal_passed: budget.terminal_passed,
+        critical_open: budget.critical_open,
+        counted: budget.counted,
+        limit: budget.limits?.total_attempt_limit,
+      })}`)
+    }
   } catch (error) { blockers.push(`attempt history: ${error.message}`) }
   const ok = blockers.length === 0
   const report = {
