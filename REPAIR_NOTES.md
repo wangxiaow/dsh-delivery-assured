@@ -127,6 +127,29 @@ BL-000 记录：`machine_verified_outcomes` 8 项、`remaining_outcomes` 3 项�
 
 修复：晋升步骤补 `DSH_CI_RUN_ID: ${{ github.run_id }}-${{ github.run_attempt }}`，并在 [ci-record 回归](tools/ci-record.test.mjs) 增加断言（100 项）。已写入的 BL-000 记录不重写——不篡改权威记录，缺口如实记在此处；BL-001 起携带真实 run。
 
+### 待修（已定位，尚未修）：晋升过一次之后，第二个 Baseline 永远晋升不了
+
+第二轮/第三轮真实证据都在，但 `promote-baseline`（`expected_parent=BL-000`）被拒：
+
+```text
+PROMOTION BLOCKED convergence budget or ledger is blocked: []
+the protected baseline ref was not moved.
+```
+
+机制（读 durable state + 代码确认）：`attemptFromCI` 把 `standard_digest = standardDigest(bindings, environment)` 记进预算账本，而该摘要**包含 `spine_manifest_digest`**。BL-000 晋升时把 8 个 case 累积进 Spine，标准摘要随之从 `3e37a0c6…` 变成 `1e62a651…`（acceptance/contract/verifier 摘要都没变，case 集也没变）。于是：
+
+- `sameStandard(最新 pass, 首轮 pinned)` = false → `fixedByKey` 既不 advance 也不 rebase；
+- `terminalPassed = false` → 同根因计数达 3 → `requiresReplan = true` → `blocked = true`，而 `invalid_entries` 为空，日志只说"blocked"不说原因。
+
+**含义**：Spine 累积是系统自身推进的结果，却被当成"标准变了、窗口不可比"，结果是 **Baseline #0 之后无法再晋升任何候选**——与之前那个死锁同类。fail-closed 本身是对的（`baseline/main` 未被写坏，账本里三次尝试如实记录）。
+
+下一轮修法（需要 owner 确认，因为它动的是 §9.2/§9.4 的预算语义）：
+1. 把"可比性"从单一 `standard_digest` 拆成**组件**：contract/acceptance/verifier 摘要 + case 集 + required_total 构成 `comparison_digest`；Spine 摘要单独记录（它是要被保护的对象，不是比较身份）。
+2. 当差异**仅**来自"上一次晋升累积的 Spine 且是原集合的超集"时，允许**自动重基**（记录 rebase 事件），而不是阻塞；标准被削弱（acceptance/contract/verifier 变化且无批准）仍必须阻塞。
+3. 诊断补齐：`blocked` 时必须分别输出 `invalid_entries`、`budget_blocked`、`requires_replan`、`critical_open`，不能只打印空数组。
+4. 回归：构造"晋升累积 Spine → 新候选 PASS → 仍 terminal_passed"的链条，以及"摘要被削弱仍阻塞"的反例。
+
+
 ## 尚欠工程与外部实证
 
 1. **可运行、可独立实证的隔离后端仍未实现。** 已增加[限制型请求模块](ci/tools/ci-isolation.mjs)：固定 digest、non-root、无网络、只读输入、独立输出、资源限制、cap-drop、无主机环境继承及 shell；注入执行器的零退出始终不授予 runtime trust 或 Promotion。这个模块没有真实 executor，没有锁定/独立证明实际 mount 和 namespace；现有 verifier 的项目内写入也尚未适配只读输入，不能把请求参数或合成测试当作端到端可用后端。 本机 Get-Command docker 未发现 Docker CLI，未连接 daemon 或拉取镜像，不能以本机现有环境实证容器隔离。 候选和 verifier 目前不能凭复制 canonical 文件获得进程/文件系统隔离保证。collector 忽略候选自行提交的 trust 字段，仅将 transport 标为已确认，runtime_isolation_verified 固定 false；这些观察不能关闭 Coverage。**本轮已按 owner 决定把隔离从晋升硬门禁降级为告警：** `promotion.yml` 不再无条件阻塞，告警写入 Baseline 元数据 `runtime_isolation`，transport/仓库/run 身份/revision 来源仍阻塞。真实隔离后端依旧是欠账，不能用自报布尔值替代。
