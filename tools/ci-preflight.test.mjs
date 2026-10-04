@@ -117,11 +117,12 @@ for (const file of workflows) {
 
     for (const match of line.matchAll(/\bnode\s+([A-Za-z0-9_./@-]+\.mjs)/g)) {
       const target = match[1]
-      if (target.startsWith('../')) continue // resolves relative to a sibling checkout
+      if (target.startsWith('../')) { failures.push(`${file}:${index + 1}: ambiguous sibling tool path ${target}`); continue }
+      const canonicalTarget = target.replace(/^canonical\//, '')
       const base = currentWorkdir.startsWith('.') ? join(repoRoot, currentWorkdir) : repoRoot
       check(
         `${file}:${index + 1}: node target exists -> ${target}`,
-        existsSync(resolve(base, target)),
+        existsSync(resolve(base, canonicalTarget)),
         `looked in ${resolve(base, target)}`,
       )
     }
@@ -151,12 +152,25 @@ for (const file of workflows) {
 
 // The CI tools the workflows call must actually be present.
 const toolsDir = join(repoRoot, 'ci', 'tools')
-for (const tool of ['ci-spec-diff.mjs', 'ci-standards-diff.mjs', 'ci-promote.mjs', 'verify-artifact.mjs']) {
+for (const tool of ['ci-spec-diff.mjs', 'ci-standards-diff.mjs', 'ci-promote.mjs', 'verify-artifact.mjs', 'ci-deploy-probe.mjs']) {
   check(`ci tool exists: ${tool}`, existsSync(join(toolsDir, tool)))
 }
+// Packaging is not a deployment observation: verify-artifact.mjs reports the
+// artifact digest, while verify-deployment.mjs refuses to pass without an
+// observed deployment identity. Those three variables must therefore have a
+// real producer. Checking only "verify-artifact.mjs is mentioned" was a false
+// green — it passed while nothing emitted DSH_DEPLOYMENT_ID at all.
+const probePath = join(toolsDir, 'ci-deploy-probe.mjs')
+const probeText = existsSync(probePath) ? readFileSync(probePath, 'utf8') : ''
 check(
-  'the deployment gate has a producer it can call',
-  existsSync(join(toolsDir, 'verify-artifact.mjs')),
+  'the deployment gate has a producer that emits a deployment identity',
+  probeText.includes('DSH_DEPLOYMENT_ID=') && probeText.includes('DSH_DEPLOYED_CODE_REVISION=') && probeText.includes('DSH_DEPLOYED_IMAGE_DIGEST='),
+  `no producer emits DSH_DEPLOYMENT_ID / DSH_DEPLOYED_CODE_REVISION / DSH_DEPLOYED_IMAGE_DIGEST (${probePath})`,
+)
+check(
+  'the producer runs the installed artifact instead of echoing the candidate',
+  probeText.includes('spawnSync') && probeText.includes('mkdtempSync') && !/DSH_DEPLOYED_CODE_REVISION=\$\{?process\.env\.DSH_CANDIDATE/.test(probeText),
+  'the producer must install and run the packaged artifact, not copy DSH_CANDIDATE into the reported revision',
 )
 
 // The protection material, and it must explain the platform-level steps a file
@@ -171,13 +185,13 @@ check('CODEOWNERS is installed where the platform reads it', existsSync(join(rep
 const verifyText = workflows.includes('verify.yml') ? readFileSync(join(workflowDir, 'verify.yml'), 'utf8') : ''
 if (verifyText !== '') {
   check(
-    'verify.yml produces the deployment identity instead of assuming it',
-    /verify-artifact\.mjs/.test(verifyText),
-    'no step computes DSH_DEPLOYMENT_ID / DSH_DEPLOYED_CODE_REVISION / DSH_IMAGE_DIGEST',
+    'verify.yml runs the deployment-identity producer before the gates',
+    /ci-deploy-probe\.mjs/.test(verifyText),
+    'no step computes DSH_DEPLOYMENT_ID / DSH_DEPLOYED_CODE_REVISION / DSH_DEPLOYED_IMAGE_DIGEST',
   )
   check(
     'verify.yml feeds those values to the gates',
-    />>\s*"\$GITHUB_ENV"/.test(verifyText),
+    />>\s*(?:"\$GITHUB_ENV"|\$env:GITHUB_ENV)/.test(verifyText),
     'artifact step does not append to $GITHUB_ENV',
   )
 }

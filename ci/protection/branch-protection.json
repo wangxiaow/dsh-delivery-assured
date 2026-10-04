@@ -2,17 +2,17 @@
   "_comment": "分支保护要求的声明式描述。这不是一个可执行的 GitHub 配置：平台之间的字段名不同，而且真正的保护必须在平台上开启。用 ci/protection/apply-protection.ps1 应用，或按 README.md 手工配置。未应用时，v0.5 要求把它当作“保护未生效”并如实记录。",
   "target": {
     "default_branch": "main",
-    "protected_refs": ["refs/heads/main", "refs/heads/standards/acceptance", "refs/heads/baseline/main"]
+    "protected_refs": ["refs/heads/main", "refs/heads/standards/acceptance", "refs/heads/baseline/main", "refs/heads/delivery-state/main"]
   },
   "required_status_checks": {
     "strict": true,
     "contexts": ["verify / verify candidate", "verify / structural checks"]
   },
   "required_pull_request_reviews": {
-    "required_approving_review_count": 0,
+    "required_approving_review_count": 1,
     "require_code_owner_reviews": true,
     "dismiss_stale_reviews": true,
-    "_note": "自用仓库可以把批准数设为 0，但必须保留 CODEOWNERS 审批，否则受保护路径形同虚设。"
+    "_note": "At least one actual code-owner approval is required; placeholder owners must be replaced on the platform."
   },
   "enforce_admins": true,
   "allow_force_pushes": false,
@@ -21,8 +21,16 @@
   "restrictions": {
     "_note": "只有 Promotion job 的机器身份可以推 refs/heads/baseline/*。把这个身份加进 bypass 列表，其他任何身份（包括实现 Agent 使用的身份）都不加。",
     "baseline_push_identities": ["<promotion-job-app-or-deploy-key>"],
-    "bypass_actors": ["<promotion-job-app-or-deploy-key>"]
+    "state_push_identities": ["<state-recording-job-app>", "<promotion-job-app-or-deploy-key>"],
+    "bypass_actors": ["<promotion-job-app-or-deploy-key>"],
+    "state_token_forbidden_refs": ["refs/heads/baseline/**", "refs/heads/standards/**", "refs/heads/main"]
   },
+  "protected_environments": {
+    "delivery-state-recording": { "required_reviewers": ["<owner>"], "allowed_branch": "main", "secrets": ["STATE_PUSH_TOKEN"] },
+    "delivery-state-bootstrap": { "required_reviewers": ["<owner>"], "prevent_self_review": true, "allowed_branch": "main", "secrets": ["STATE_PUSH_TOKEN"], "explicit_owner_input": true },
+    "baseline-promotion": { "required_reviewers": ["<owner>"], "allowed_branch": "main", "secrets": ["BASELINE_PUSH_TOKEN"], "blocked_until": "independently enforced Candidate runtime isolation" }
+  },
+  "state_serialization": { "concurrency_group": "delivery-state-main", "expected_sha_lease": true, "append_only_history": true },
   "rulesets": [
     {
       "name": "protect-delivery-standards",
@@ -30,8 +38,8 @@
       "enforcement": "active",
       "conditions": { "ref_name": { "include": ["refs/heads/main"] } },
       "rules": [
-        { "type": "required_status_checks", "parameters": { "strict_required_status_checks_policy": true, "required_status_checks": [{ "context": "verify / verify candidate" }] } },
-        { "type": "pull_request", "parameters": { "required_approving_review_count": 0, "require_code_owner_review": true } },
+        { "type": "required_status_checks", "parameters": { "strict_required_status_checks_policy": true, "required_status_checks": [{ "context": "verify / verify candidate" }, { "context": "verify / structural checks" }] } },
+        { "type": "pull_request", "parameters": { "required_approving_review_count": 1, "require_code_owner_review": true } },
         { "type": "non_fast_forward" },
         { "type": "deletion" }
       ]
@@ -45,6 +53,14 @@
         { "type": "non_fast_forward" },
         { "type": "deletion" }
       ]
+    },
+    {
+      "name": "delivery-state-writers-only",
+      "target": "branch",
+      "enforcement": "active",
+      "conditions": { "ref_name": { "include": ["refs/heads/delivery-state/main"] } },
+      "allowed_writers": ["<state-recording-job-app>", "<promotion-job-app-or-deploy-key>"],
+      "rules": [{ "type": "non_fast_forward" }, { "type": "deletion" }]
     },
     {
       "name": "freeze-acceptance-standard",

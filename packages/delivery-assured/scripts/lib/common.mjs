@@ -10,6 +10,7 @@
 import { readFileSync, existsSync, readdirSync, statSync } from 'node:fs'
 import { join, resolve, dirname, isAbsolute, relative } from 'node:path'
 import { createHash } from 'node:crypto'
+import { fileURLToPath } from 'node:url'
 import { execFileSync } from 'node:child_process'
 import { parseYaml, YamlError } from './yaml.mjs'
 
@@ -237,7 +238,7 @@ function resolveChecklistDirs(root, cfg) {
   const dirs = []
   if (cfg.paths.templateChecklists) dirs.push(abs(root, cfg.paths.templateChecklists))
   dirs.push(join(root, 'templates', 'checklists'))
-  const here = dirname(new URL(import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, '$1'))
+  const here = dirname(fileURLToPath(import.meta.url))
   dirs.push(resolve(here, '..', '..', 'templates', 'checklists'))
   return dirs.filter((d) => existsSync(d))
 }
@@ -426,6 +427,7 @@ export function standardBindings(root, cfg) {
     dependency_lock_digest: lockDigest,
     migration_digest: treeDigest(root, migrationFiles),
     spine_manifest_digest: spineDigest,
+    slice_manifest_digest: treeDigest(root, listFiles(abs(root, cfg.paths.slices), p => /\.ya?ml$/.test(p))),
   }
 }
 

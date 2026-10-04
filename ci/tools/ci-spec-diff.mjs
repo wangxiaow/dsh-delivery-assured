@@ -10,8 +10,9 @@
  */
 
 import { execFileSync } from 'node:child_process'
+import { parseYaml } from '../../packages/delivery-assured/scripts/lib/yaml.mjs'
 
-const SPEC_PATH = 'tests/acceptance/spec'
+const SPEC_PATH = 'project/tests/acceptance/spec'
 
 function parse(argv) {
   const opts = { candidateRef: process.env.DSH_CANDIDATE_REF || 'HEAD', protectedRef: process.env.DSH_PROTECTED_REF || 'refs/heads/standards/acceptance', repo: '.', json: false }
@@ -95,7 +96,7 @@ function main() {
     const message = `no protected acceptance revision at ${opts.protectedRef}; the first verification freezes it`
     if (opts.json) process.stdout.write(`${JSON.stringify({ status: 'no_protected_revision', detail: message, diffs: [] }, null, 2)}\n`)
     else process.stdout.write(`note: ${message}\n`)
-    return 0
+    return 1
   }
   const protectedTree = treeStatus(opts.repo, protectedSha, SPEC_PATH)
   if (protectedTree === null) {
@@ -103,6 +104,25 @@ function main() {
     return 2
   }
 
+  if (Object.keys(candidateTree).length === 0 || Object.keys(protectedTree).length === 0 ||
+      !(`${SPEC_PATH}/manifest.yaml` in candidateTree) || !(`${SPEC_PATH}/manifest.yaml` in protectedTree)) {
+    process.stderr.write('ci-spec-diff: both project acceptance trees and manifests must be nonempty\n')
+    return 1
+  }
+  for (const sha of [candidateSha, protectedSha]) {
+    const manifest = parseYaml(git(opts.repo, ['show', `${sha}:${SPEC_PATH}/manifest.yaml`]))
+    if (!Array.isArray(manifest?.cases) || !manifest.cases.some((testCase) => testCase.required === true && testCase.method === 'automated')) {
+      process.stderr.write('ci-spec-diff: frozen manifest contains no required machine case\n')
+      return 1
+    }
+    for (const testCase of manifest.cases.filter((entry) => entry.required && entry.method === 'automated')) {
+      const spec = `project/${testCase.spec_ref || ''}`
+      if (!spec.startsWith(`${SPEC_PATH}/`) || spec.includes('..') || !tryGit(opts.repo, ['show', `${sha}:${spec}`]).out.trim()) {
+        process.stderr.write('ci-spec-diff: required machine case has no nonempty frozen spec\n')
+        return 1
+      }
+    }
+  }
   const names = [...new Set([...Object.keys(candidateTree), ...Object.keys(protectedTree)])].sort()
   const diffs = []
   for (const name of names) {

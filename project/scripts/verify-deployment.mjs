@@ -6,7 +6,10 @@
  * actually running elsewhere is the same code and image. A version string typed by
  * hand is not enough: the observed revision must equal the frozen candidate.
  *
- * Contract of the environment (injected by the deployment job, never by the Agent):
+ * Contract of the environment (injected by the deployment job, never by the Agent
+ * and never by the Candidate process itself; in CI the producer is
+ * ci/tools/ci-deploy-probe.mjs, which installs the packaged artifact into a clean
+ * directory, runs it, and reports what it observed):
  *   DSH_CANDIDATE                the frozen candidate revision being verified
  *   DSH_DEPLOYMENT_ID            identity of the real deployment
  *   DSH_DEPLOYED_CODE_REVISION   revision the deployment actually reports

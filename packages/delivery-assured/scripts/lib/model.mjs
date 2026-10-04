@@ -8,6 +8,8 @@
  */
 
 import { existsSync, readFileSync } from 'node:fs'
+import { validateEvidenceRecord, preferProof } from './evidence.mjs'
+import { requiredCaseIds } from './selection.mjs'
 import {
   abs,
   listFiles,
@@ -84,6 +86,7 @@ export function loadModel(root) {
   const baselines = loadBaselines(root, cfg)
   const attempts = loadAttempts(root, cfg)
   const state = loadState(root, cfg)
+  const standardChanges = readYaml(abs(root, '.agent/STANDARD_CHANGES.yaml'), { required: false })?.changes || []
   const obligations = obligationIndex(contract)
   const checklistsById = new Map()
   for (const checklist of checklists) {
@@ -119,6 +122,7 @@ export function loadModel(root) {
     state,
     obligations,
     currentBindings,
+    standardChanges,
   }
 }
 
@@ -617,6 +621,9 @@ export function specDiffAgainstProtected(projectRoot, protectedSpecDir) {
     else if (right === null) diffs.push({ path: name, kind: 'added_in_candidate' })
     else if (!left.equals(right)) diffs.push({ path: name, kind: 'modified' })
   }
+  if (candidateNames.length === 0 || protectedNames.length === 0) {
+    return { available: false, reason: 'candidate or protected acceptance spec is empty', diffs }
+  }
   return { available: true, diffs }
 }
 
@@ -675,38 +682,62 @@ export const STALE_REASONS = {
  * Classify one evidence record against the current candidate, standards and
  * expected parent baseline. Returns `fresh` only when every binding matches —
  * a partially matching record can never prove the current state.
+ *
+ * Attestation is decided by the caller, never by the file. Anyone who can write
+ * JSON can write `trust: { transport_verified: true }`, so a record's own claim
+ * is reported back as `claims` and never upgrades the result. Only a consumer
+ * that has checked an authenticated platform receipt (the CI collector or the
+ * Promotion job) may pass `attested: true`; local readers leave it false and say
+ * so, which is why a local "verified" row is never a completion credential.
  */
-export function classifyEvidence(record, { model, codeRevision, parentBaseline, trustedIssuer }) {
+export function classifyEvidence(record, { model, codeRevision, parentBaseline, trustedIssuer, attested = false }) {
   if (record.__invalid || !record.evidence_id) {
-    return { fresh: false, reasons: ['evidence file is not a valid record'], record }
+    return { fresh: false, current: false, reasons: ['evidence file is not a valid record'], record }
   }
-  const reasons = []
+  const bindingReasons = []
   const b = record.bindings || {}
-  const e = record.environment || {}
-  const x = record.execution || {}
-  const requiredEnv = model.cfg.sliceEnvironment
-  const envKind = e.kind
-  if (trustedIssuer && record.issuer?.identity !== trustedIssuer) {
-    reasons.push(STALE_REASONS.issuer + ` (issuer=${record.issuer?.identity ?? 'none'})`)
+  const current = model.currentBindings || {}
+  if (!trustedIssuer || record.issuer?.identity !== trustedIssuer) {
+    bindingReasons.push(STALE_REASONS.issuer)
   }
-  if (x.result !== 'PASS') reasons.push(`${STALE_REASONS.result} (result=${x.result ?? 'none'})`)
-  if ((x.skipped_required_cases ?? 0) > 0) reasons.push(`${STALE_REASONS.skipped} (${x.skipped_required_cases})`)
-  if (codeRevision && b.code_revision !== codeRevision) reasons.push(STALE_REASONS.code)
-  const current = model.currentBindings
-  if (b.contract_digest !== current.contract_digest) reasons.push(STALE_REASONS.contract)
-  if (b.acceptance_manifest_digest !== current.acceptance_manifest_digest) reasons.push(STALE_REASONS.acceptance)
-  if (b.verifier_config_digest && b.verifier_config_digest !== current.verifier_config_digest) {
-    reasons.push(STALE_REASONS.verifier)
+  if (!codeRevision || b.code_revision !== codeRevision) bindingReasons.push(STALE_REASONS.code)
+  const fields = {
+    contract_digest: STALE_REASONS.contract,
+    acceptance_manifest_digest: STALE_REASONS.acceptance,
+    acceptance_digest: STALE_REASONS.acceptance,
+    verifier_config_digest: STALE_REASONS.verifier,
+    dependency_lock_digest: STALE_REASONS.dependencies,
+    migration_digest: STALE_REASONS.migration,
+    spine_manifest_digest: STALE_REASONS.spine,
+    slice_manifest_digest: 'Slice mapping changed',
   }
-  if (b.dependency_lock_digest && b.dependency_lock_digest !== current.dependency_lock_digest) {
-    reasons.push(STALE_REASONS.dependencies)
+  const promoted = (model.baselines || []).find(baseline => baseline.code_revision === codeRevision && baseline.evidence_refs?.includes(record.evidence_id))
+  const promotedSpine = promoted && promoted.accumulated_spine_manifest_digest === current.spine_manifest_digest
+    && promoted.verification_scope?.spine_manifest_digest === b.spine_manifest_digest
+    && JSON.stringify([...(promoted.accumulated_spine_case_ids || [])].sort()) === JSON.stringify([...(model.spine?.caseIds || [])].sort())
+    && (model.spine?.caseIds || []).every(id => record.execution?.case_results?.some(r => r.case_id === id && r.outcome === 'passed'))
+  for (const [key, reason] of Object.entries(fields)) {
+    if (key === 'spine_manifest_digest' && promotedSpine) continue
+    if (!Object.hasOwn(b, key) || b[key] !== current[key]) bindingReasons.push(`${reason} (${key})`)
   }
-  if (b.migration_digest && b.migration_digest !== current.migration_digest) reasons.push(STALE_REASONS.migration)
-  if (parentBaseline && b.parent_baseline !== parentBaseline) reasons.push(STALE_REASONS.parent)
-  if (envKind && envKind !== 'local_diagnostic' && requiredEnv === 'production_like_container' && envKind !== 'production_like_ci') {
-    reasons.push(`${STALE_REASONS.environment} (kind=${envKind})`)
+  const boundParent = promoted?.baseline_id === parentBaseline ? promoted.parent_baseline : parentBaseline
+  if (boundParent !== undefined && b.parent_baseline !== boundParent) bindingReasons.push(STALE_REASONS.parent)
+  const integrity = validateEvidenceRecord(record)
+  try {
+    const expected = requiredCaseIds(model, record.scope?.slice_id === 'MVP' ? null : record.scope?.slice_id)
+    if (JSON.stringify(expected) !== JSON.stringify([...(record.scope?.required_case_ids || [])].sort())) integrity.push('Required scope differs from the frozen Slice and Spine')
+  } catch (error) { integrity.push(`invalid frozen scope: ${error.message}`) }
+  // A failed run can be current without ever being a valid passing record.
+  const reasons = [...bindingReasons, ...integrity]
+  // Self-declared trust flags are claims, not authentication. Requiring them
+  // here once rejected every record the real collector writes (it never grants
+  // runtime isolation) while accepting a hand-written file that set both
+  // booleans — the exact inversion this field now avoids.
+  const claims = {
+    transport: record.trust?.transport_verified === true,
+    isolation: record.trust?.runtime_isolation_verified === true,
   }
-  return { fresh: reasons.length === 0, reasons, record }
+  return { fresh: reasons.length === 0, current: bindingReasons.length === 0, reasons, attested: attested === true, claims, record }
 }
 
 /** Evidence that proves a specific case id passed on the current candidate. */
@@ -716,10 +747,12 @@ export function caseOutcomeFromEvidence(evidence, caseId, options) {
     const classified = classifyEvidence(record, options)
     const result = (record.execution?.case_results || []).find((r) => r.case_id === caseId)
     if (!result) continue
-    const candidate = { outcome: result.outcome, fresh: classified.fresh, reasons: classified.reasons, ref: record.evidence_id }
-    if (!best) best = candidate
-    else if (!best.fresh && candidate.fresh) best = candidate
-    else if (best.outcome !== CASE_PASS && candidate.outcome === CASE_PASS) best = candidate
+    const candidate = {
+      outcome: result.outcome, fresh: classified.fresh, current: classified.current,
+      reasons: classified.reasons, ref: record.evidence_id, attested: classified.attested,
+      at: Date.parse(record.execution?.finished_at) || 0,
+    }
+    best = preferProof(best, candidate)
   }
   return best
 }

@@ -17,7 +17,7 @@ paths:
   acceptanceDriver: tests/acceptance/driver
   spineManifest: tests/spine/manifest.yaml
   verifier: ci/verifier.yaml
-  templateChecklists: ../../packages/delivery-assured/templates/checklists
+  templateChecklists: ../packages/delivery-assured/templates/checklists
   evidenceDir: .agent/evidence
   attemptsLog: .agent/attempts.jsonl
 

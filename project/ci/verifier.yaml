@@ -20,8 +20,8 @@ gates:
 
   - gate: clean_boot
     # 干净状态启动：缺少必要文件必须明确失败，而不是静默成功。
-    # 命令在 Windows PowerShell 5.1 下也必须合法，所以不使用 `&&` 连接。
-    command: "node src/cli.mjs --help; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }; node scripts/check-clean-boot.mjs"
+    # 只执行单条 Node 命令；Windows 与 Linux 共用相同验证配置。
+    command: "node scripts/check-clean-boot.mjs"
     timeout_ms: 300000
 
   - gate: persistence_migration
@@ -31,7 +31,7 @@ gates:
     reason: "只读 CLI 无持久化与迁移入口；migrations/ 不存在，本 gate 明确不适用（v0.5 §13.3）"
 
   - gate: slice_acceptance
-    command: "node tests/harness/run.mjs; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }; node scripts/verify-acceptance-accounting.mjs"
+    command: "node scripts/run-acceptance.mjs"
     timeout_ms: 600000
 
   - gate: regression_spine
@@ -40,7 +40,9 @@ gates:
     timeout_ms: 600000
 
   - gate: deployment
-    # 本地无部署通路时明确不适用；CI 上必须真正执行并报告实际版本。
+    # 部署观测由 ci/tools/ci-deploy-probe.mjs 生产：把打包产物装进干净目录并实际运行，
+    # 再报告观测到的 revision/image digest（不是 DSH_CANDIDATE 的回显）。它明确不是
+    # staging 部署、也不是容器隔离；MVP_READY 仍要求真实 staging（environment.kind）。
     command: "node scripts/verify-deployment.mjs"
     local: skip
     timeout_ms: 300000

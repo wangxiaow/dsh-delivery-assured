@@ -40,6 +40,11 @@
             "acceptance_manifest_digest",
             "verifier_config_revision",
             "spine_manifest_digest",
+            "slice_manifest_digest",
+            "acceptance_digest",
+            "verifier_config_digest",
+            "dependency_lock_digest",
+            "migration_digest",
             "parent_baseline"
           ],
           "properties": {
@@ -49,10 +54,13 @@
             "acceptance_revision": { "$ref": "#/$defs/revision" },
             "acceptance_manifest_digest": { "$ref": "#/$defs/digest" },
             "verifier_config_revision": { "$ref": "#/$defs/revision" },
-            "dependency_lock_digest": { "$ref": "#/$defs/digest" },
-            "migration_digest": { "$ref": "#/$defs/digest" },
+            "dependency_lock_digest": { "oneOf": [{ "$ref": "#/$defs/digest" }, { "type": "null" }] },
+            "migration_digest": { "oneOf": [{ "$ref": "#/$defs/digest" }, { "type": "null" }] },
             "spine_manifest_digest": { "$ref": "#/$defs/digest" },
-            "parent_baseline": { "type": "string" }
+            "slice_manifest_digest": { "$ref": "#/$defs/digest" },
+            "acceptance_digest": { "$ref": "#/$defs/digest" },
+            "verifier_config_digest": { "$ref": "#/$defs/digest" },
+            "parent_baseline": { "type": ["string", "null"] }
           }
         },
         "environment": {

@@ -20,6 +20,8 @@
  */
 
 import { existsSync } from 'node:fs'
+import { classifyManualReview, proveCase, coverageRows, blockingForView } from './lib/coverage-core.mjs'
+import { gitRevision } from './lib/common.mjs'
 import { join } from 'node:path'
 import {
   EXIT,
@@ -349,6 +351,9 @@ function checkMvpReadiness(model, issues) {
   const requireCaseIds = model.acceptance.cases.filter((c) => c.required === true).map((c) => c.id)
   checkAcceptanceManifest(model, issues, { requireCaseIds })
 
+  const candidate = gitRevision(model.root, 'HEAD')
+  const parentBaseline = model.baselines.at(-1)?.baseline_id || null
+  const trustedIssuer = model.cfg.ci?.trusted_issuer
   const manualReviews = model.contract.acceptance?.manual_reviews || []
   for (const review of manualReviews) {
     const recorded = model.reviews.find((r) => r.review_id === review.id || r.review_id === review.id)
@@ -377,6 +382,8 @@ function checkMvpReadiness(model, issues) {
         id: review.id,
       })
     }
+    const classification = classifyManualReview(recorded, review, model, { candidate, parentBaseline, trustedIssuer })
+    if (classification.status !== 'VERIFIED') issues.push({ level: 'fail', code: 'REVIEW_NOT_CURRENT', message: classification.detail, id: review.id })
     if (!recorded.bindings?.code_revision || isPlaceholder(recorded.bindings.code_revision)) {
       issues.push({
         level: 'fail',
@@ -390,19 +397,20 @@ function checkMvpReadiness(model, issues) {
   const automated = model.acceptance.cases.filter((c) => c.required === true && c.method === 'automated')
   const missingEvidence = []
   for (const testCase of automated) {
-    const proof = model.evidence.filter((record) => (record.execution?.case_results || []).some((r) => r.case_id === testCase.id && r.outcome === 'passed'))
-    const trusted = proof.filter((record) => record.issuer?.identity && record.issuer.identity === model.cfg.ci?.trusted_issuer)
-    if (trusted.length === 0) missingEvidence.push(testCase.id)
+    const proof = proveCase(model, testCase.id, { codeRevision: candidate, parentBaseline, trustedIssuer })
+    if (!proof?.fresh || proof.outcome !== 'passed') missingEvidence.push(testCase.id)
   }
   for (const caseId of missingEvidence) {
     issues.push({
       level: 'fail',
       code: 'CASE_NO_TRUSTED_EVIDENCE',
-      message: `required case ${caseId} has no passing record from the trusted CI issuer`,
+      message: `required case ${caseId} has no current complete record naming the configured CI issuer`,
       id: caseId,
     })
   }
 
+  const fullCoverage = coverageRows(model, { candidate, parentBaseline, trustedIssuer })
+  for (const id of blockingForView(fullCoverage.buckets, 'mvp')) issues.push({ level: 'fail', code: 'CONTRACT_NOT_CLOSED', message: `Required ${id} remains unverified`, id })
   const baselines = model.baselines.filter((b) => b.baseline_id)
   if (baselines.length === 0) {
     issues.push({
@@ -412,6 +420,12 @@ function checkMvpReadiness(model, issues) {
     })
   } else {
     const latest = baselines[baselines.length - 1]
+    const staging = model.evidence.find(e => latest.evidence_refs?.includes(e.evidence_id)
+      && e.bindings?.code_revision === candidate && latest.code_revision === candidate
+      && e.environment?.kind === 'staging' && e.environment?.deployment_id === latest.environment?.staging_deployment_id
+      && e.environment?.image_digest === latest.environment?.image_digest
+      && automated.every(c => proveCase({ ...model, evidence: [e] }, c.id, { codeRevision: candidate, parentBaseline, trustedIssuer })?.fresh))
+    if (!staging) issues.push({ level: 'fail', code: 'STAGING_NOT_CURRENT', message: 'staging deployment is not proven on the current candidate, image and complete machine set' })
     if (!latest.environment?.staging_deployment_id) {
       issues.push({
         level: 'fail',

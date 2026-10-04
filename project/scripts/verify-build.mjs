@@ -64,9 +64,25 @@ const pluginTests = [
   // use their own tool builder and shell double, so they once passed while the plugin
   // was in fact unloadable. It needs a real runtime — the desktop payload counts.
   { label: 'plugin runtime contract', file: join(pluginRoot, 'test', 'compatibility.test.mjs'), requires: 'dsh-runtime' },
+  // v0.3 §4.3: the seven controls must be verified against the locked host before
+  // "plugin-first" is believed. This suite reports which hold and which do not.
+  { label: 'host trust boundary (§4.3)', file: join(pluginRoot, 'test', 'trust-boundary.test.mjs'), requires: 'dsh-runtime' },
+  // A tool definition compiled by a foreign DSH line fails the model request with an
+  // invalid function schema, so the runtime the plugin compiles against is a contract.
+  { label: 'host helper resolution', file: join(pluginRoot, 'test', 'host-resolution.test.mjs'), requires: 'dsh-runtime' },
+  { label: 'One-command install', file: join(repoRoot, 'tools', 'install-plugin.test.mjs'), requires: 'none' },
   // The workflows cannot run without a remote, so a wrong `node <path>` inside them
   // would otherwise stay invisible until the first push. This check runs here.
   { label: 'CI preflight', file: join(repoRoot, 'tools', 'ci-preflight.test.mjs'), requires: 'none' },
+  { label: 'CI history gaps', file: join(repoRoot, 'tools', 'ci-history.test.mjs'), requires: 'none' },
+  { label: 'CI counted-failure resolutions', file: join(repoRoot, 'tools', 'ci-resolution.test.mjs'), requires: 'none' },
+  { label: 'CI reconciliation planner', file: join(repoRoot, 'tools', 'ci-reconcile.test.mjs'), requires: 'none' },
+  { label: 'CI reconciliation wiring', file: join(repoRoot, 'tools', 'ci-reconcile-run.test.mjs'), requires: 'none' },
+  { label: 'CI full control-state snapshot', file: join(repoRoot, 'tools', 'ci-state-snapshot.test.mjs'), requires: 'none' },
+  { label: 'CI isolation request refusals', file: join(repoRoot, 'tools', 'ci-isolation.test.mjs'), requires: 'none' },
+  { label: 'Deployment identity producer', file: join(repoRoot, 'tools', 'deploy-probe.test.mjs'), requires: 'none' },
+  { label: 'Installed checklist paths', file: join(repoRoot, 'tools', 'checklist-path.test.mjs'), requires: 'none' },
+  { label: 'CI bootstrap seed graph', file: join(repoRoot, 'tools', 'ci-bootstrap-seed.test.mjs'), requires: 'none' },
 ]
 const dshHome = process.env.DSH_HOME || join(process.env.USERPROFILE || '', '.dsh')
 const dshPackagesPresent = existsSync(join(dshHome, 'profiles', 'node_modules', '@deepseek-ai', 'dsh-skill'))
@@ -99,6 +115,11 @@ if (!existsSync(pluginRoot)) {
       failures.push(`${test.label} failed: ${(result.stderr || result.stdout || '').trim().split('\n').slice(-3).join(' / ')}`)
     }
   }
+}
+
+for (const file of ['evidence.test.mjs', 'verification.test.mjs', 'convergence.test.mjs']) {
+  const result = spawnSync(process.execPath, [join(packRoot, 'tests', file)], { cwd: root, encoding: 'utf8' })
+  if (result.status !== 0) failures.push(`${file} failed: ${(result.stderr || result.stdout || '').trim().split('\n').slice(-4).join(' / ')}`)
 }
 
 // Loading a module is a stronger check than parsing it: it also catches a broken

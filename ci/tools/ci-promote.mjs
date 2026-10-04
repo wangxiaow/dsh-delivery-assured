@@ -23,19 +23,20 @@
  * Exit codes: 0 promoted, 1 a promotion condition failed, 2 input/tool error.
  */
 
-import { readFileSync, writeFileSync, mkdirSync, existsSync, readdirSync } from 'node:fs'
+import { readFileSync, writeFileSync, mkdirSync, existsSync, readdirSync, cpSync, mkdtempSync, rmSync } from 'node:fs'
 import { execFileSync } from 'node:child_process'
 import { join, dirname, resolve } from 'node:path'
-import { fileURLToPath } from 'node:url'
-import { loadContract, loadAcceptance, loadSpine, standardBindings, loadProjectConfig } from '../../packages/delivery-assured/scripts/lib/common.mjs'
-import { collectCriticalViolations, coverageRows } from '../../packages/delivery-assured/scripts/lib/coverage-core.mjs'
-import { loadModel } from '../../packages/delivery-assured/scripts/lib/model.mjs'
+import { loadSpine, standardBindings, loadProjectConfig, fileDigest } from '../../packages/delivery-assured/scripts/lib/common.mjs'
+import { collectCriticalViolations, coverageRows, blockingForView, classifyManualReview } from '../../packages/delivery-assured/scripts/lib/coverage-core.mjs'
+import { loadModel, classifyEvidence, checkUnknowns } from '../../packages/delivery-assured/scripts/lib/model.mjs'
+import { validateArtifact } from './ci-artifact.mjs'
+import { attemptFromCI, computeConvergence } from '../../packages/delivery-assured/scripts/lib/convergence.mjs'
+import { validateFixtureTarget, validatePromotionReceipt, isolationWarnings } from './ci-trust.mjs'
+import { scopeForSlice } from '../../packages/delivery-assured/scripts/lib/selection.mjs'
+import { assessMvpReady } from '../../packages/delivery-assured/scripts/lib/mvp.mjs'
+import { confirmReceipt } from './ci-record.mjs'
 
-const here = dirname(fileURLToPath(import.meta.url))
-/** The shipped operation pack. This repository keeps it beside the project. */
-const packRoot = resolve(here, '..', '..', 'packages', 'delivery-assured')
-
-const GATES_REQUIRED = ['build', 'clean_boot', 'slice_acceptance', 'regression_spine', 'deployment']
+const GATES_REQUIRED = ['build', 'clean_boot', 'persistence_migration', 'slice_acceptance', 'regression_spine', 'deployment']
 
 function parse(argv) {
   const opts = {
@@ -55,7 +56,9 @@ function parse(argv) {
     else if (token === '--expected-parent') opts.expectedParent = argv[++i]
     else if (token === '--protected-baseline-ref') opts.baselineRef = argv[++i]
     else if (token === '--remote') opts.remote = argv[++i]
+    else if (token === '--fixture') opts.fixture = true
     else if (token === '--apply') opts.apply = true
+    else if (token === '--mode') opts.mode = argv[++i]
     else if (token === '--dry-run') opts.dryRun = true
     else if (token === '--json') opts.json = true
     else if (token === '--help') opts.help = true
@@ -104,7 +107,7 @@ function nextBaselineId(existing) {
   return `BL-${String(next).padStart(3, '0')}`
 }
 
-function main() {
+async function main() {
   const opts = parse(process.argv.slice(2))
   if (opts.help) {
     process.stdout.write('ci-promote — verify the promotion conditions and advance the protected baseline ref\n')
@@ -115,13 +118,37 @@ function main() {
   const model = loadModel(root)
   const blockers = []
   const notes = []
+  let sourceReceipt = null
+  // Reject before any remote read; local issuer labels are not transport proof.
+  if (opts.fixture) {
+    const url = git(root, ['remote', 'get-url', opts.remote], { allowFailure: true })
+    try { validateFixtureTarget(git(root, ['rev-parse', '--show-toplevel']).out, url.out) }
+    catch (error) { process.stderr.write(`FIXTURE BLOCKED ${error.message}\n`); return 1 }
+    notes.push('temporary local fixture: no platform evidence or real promotion is asserted')
+  } else {
+    const receiptPath = process.env.DSH_PROVENANCE_RECEIPT
+    if (process.env.GITHUB_ACTIONS !== 'true' || !receiptPath || !existsSync(receiptPath)) {
+      process.stderr.write('PROMOTION BLOCKED missing externally authenticated CI receipt\n')
+      return 1
+    }
+    try {
+      sourceReceipt = JSON.parse(readFileSync(receiptPath, 'utf8'))
+      const provenance = await confirmReceipt(sourceReceipt, process.env.GITHUB_REPOSITORY, process.env.DSH_GITHUB_READ_TOKEN)
+      sourceReceipt = { ...provenance, head_sha: provenance.verifier_revision, status: 'completed', isolation: sourceReceipt.isolation }
+    } catch (error) { process.stderr.write(`PROMOTION BLOCKED ${error.message}\n`); return 1 }
+  }
 
   // ---- 3. Evidence completeness and binding match -------------------------
   const records = loadEvidenceRecords(resolve(root, opts.evidenceDir))
+  model.evidence = [...model.evidence.filter((entry) => !records.some((record) => record.evidence_id === entry.evidence_id)), ...records]
   if (records.length === 0) {
     blockers.push('no evidence record was found; a missing record counts as unverified')
   }
-  const trusted = records.filter((r) => !r.__invalid && r.issuer?.identity === (cfg.ci?.trusted_issuer || r.issuer?.identity))
+  if (opts.apply && opts.dryRun) blockers.push('--apply and --dry-run are mutually exclusive')
+  if (!['promote-baseline', 'MVP_READY', undefined].includes(opts.mode)) blockers.push('unknown promotion mode')
+  if (!opts.expectedParent) blockers.push('expected parent must explicitly name a baseline ID or none')
+  const parentId = opts.expectedParent === 'none' ? null : opts.expectedParent
+  const trusted = records.filter((r) => !r.__invalid && cfg.ci?.trusted_issuer && r.issuer?.identity === cfg.ci.trusted_issuer)
   const candidates = trusted.filter((r) => r.execution?.result === 'PASS')
   if (candidates.length === 0) {
     blockers.push('no PASS record from a trusted verification job is available')
@@ -131,13 +158,24 @@ function main() {
   const current = standardBindings(root, cfg)
   for (const record of candidates) {
     const b = record.bindings || {}
-    const mismatches = []
+    if (!opts.fixture) {
+      const isolationGaps = isolationWarnings(sourceReceipt, record)
+      record.trust = { transport_verified: true, runtime_isolation_verified: isolationGaps.length === 0 }
+      for (const gap of isolationGaps) notes.push(`isolation warning (recorded, not blocking): ${gap}`)
+    }
+    const classification = classifyEvidence(record, { model, codeRevision: b.code_revision, parentBaseline: parentId, trustedIssuer: cfg.ci.trusted_issuer })
+    const mismatches = [...classification.reasons]
+    if (process.env.DSH_VERIFY_RUN_ID && record.issuer?.ci_run_id !== process.env.DSH_VERIFY_RUN_ID && record.execution?.ci_run_id !== process.env.DSH_VERIFY_RUN_ID) mismatches.push('verify run identity')
+    if (process.env.DSH_VERIFIER_REVISION && b.verifier_config_revision !== process.env.DSH_VERIFIER_REVISION) mismatches.push('verifier revision provenance')
+    if (process.env.DSH_STANDARD_REVISION && (b.acceptance_revision !== process.env.DSH_STANDARD_REVISION || b.contract_revision !== process.env.DSH_STANDARD_REVISION)) mismatches.push('frozen standard revision provenance')
+    if (record.environment?.config_fingerprint !== current.verifier_config_digest) mismatches.push('protected environment configuration fingerprint')
+    if (record.environment?.fixture_revision !== b.acceptance_revision) mismatches.push('frozen fixture revision')
     if (b.contract_digest !== current.contract_digest) mismatches.push('contract_digest')
     if (b.acceptance_manifest_digest !== current.acceptance_manifest_digest) mismatches.push('acceptance_manifest_digest')
     if (b.verifier_config_digest && b.verifier_config_digest !== current.verifier_config_digest) mismatches.push('verifier_config_digest')
     if (b.dependency_lock_digest && b.dependency_lock_digest !== current.dependency_lock_digest) mismatches.push('dependency_lock_digest')
     if (b.migration_digest && b.migration_digest !== current.migration_digest) mismatches.push('migration_digest')
-    if (opts.expectedParent && b.parent_baseline !== opts.expectedParent) mismatches.push('parent_baseline')
+    if (b.parent_baseline !== parentId) mismatches.push('parent_baseline')
     if (mismatches.length > 0) {
       notes.push(`record ${record.evidence_id} does not bind the current standards: ${mismatches.join(', ')}`)
       continue
@@ -148,6 +186,8 @@ function main() {
   if (!evidence && candidates.length > 0) {
     blockers.push('every candidate record is stale against the current standards; re-verify before promoting')
   }
+
+  if (evidence && !opts.fixture) blockers.push(...validatePromotionReceipt(sourceReceipt, evidence))
 
   // ---- 2. Gates, required cases and the Spine ------------------------------
   if (evidence) {
@@ -190,45 +230,68 @@ function main() {
     }
   }
 
+  if (evidence) {
+    const artifactRoots = []
+    function findArtifacts(dir) {
+      for (const entry of readdirSync(dir, { withFileTypes: true })) {
+        const path = join(dir, entry.name)
+        if (entry.isDirectory()) findArtifacts(path)
+        else if (entry.name === 'ARTIFACT.json') artifactRoots.push(dir)
+      }
+    }
+    findArtifacts(resolve(root, opts.evidenceDir))
+    if (artifactRoots.length !== 1) blockers.push('exactly one retained artifact is required')
+    else try { validateArtifact(artifactRoots[0], evidence) } catch (error) { blockers.push(error.message) }
+  }
+
   // ---- 4. No open Critical violation, unknown or unconfirmed change --------
+  const scope = evidence && opts.mode !== 'MVP_READY' ? scopeForSlice(model, evidence.scope.slice_id) : null
   const criticalOpen = collectCriticalViolations(model, {
+    requiredCaseIds: scope?.caseIds || null,
+    obligationIds: scope?.obligationIds || null,
     codeRevision: evidence?.bindings?.code_revision || null,
-    parentBaseline: opts.expectedParent,
+    parentBaseline: parentId,
     trustedIssuer: cfg.ci?.trusted_issuer || null,
   })
   for (const violation of criticalOpen) {
     blockers.push(`Critical rule ${violation.rule}: ${violation.message}`)
   }
-  const { buckets } = coverageRows(model, {
+  const { rows: coverage, buckets } = coverageRows(model, {
     candidate: evidence?.bindings?.code_revision || null,
-    parentBaseline: opts.expectedParent,
+    parentBaseline: parentId,
     trustedIssuer: cfg.ci?.trusted_issuer || null,
   })
-  for (const id of buckets.current_failure) blockers.push(`obligation ${id} has a current failure`)
-  for (const unknown of model.contract.unknowns || []) {
-    const status = String(unknown.status || 'unresolved')
-    if (status === 'unresolved') blockers.push(`unknown ${unknown.id} is still unresolved`)
-  }
+  const scopedBuckets = scope ? Object.fromEntries(Object.entries(buckets).map(([key, ids]) => [key, ids.filter(id => scope.obligationIds.includes(id))])) : buckets
+  for (const id of blockingForView(scopedBuckets, opts.mode === 'MVP_READY' ? 'mvp' : 'slice')) blockers.push(`obligation ${id} is not closed`)
+  const unknownIssues = []
+  checkUnknowns(model, unknownIssues, { phase: opts.mode === 'MVP_READY' ? 'mvp' : 'slice', sliceId: evidence?.scope?.slice_id })
+  for (const issue of unknownIssues.filter(i => i.level === 'fail')) blockers.push(issue.message)
 
   // ---- 5. The parent Baseline was not advanced by another candidate --------
   const remoteRef = git(root, ['ls-remote', opts.remote, opts.baselineRef], { allowFailure: true })
   let remoteSha = null
   if (remoteRef.ok && remoteRef.out !== '') remoteSha = remoteRef.out.split(/\s+/)[0]
-  const localParentSha = opts.expectedParent && opts.expectedParent !== 'none'
-    ? git(root, ['rev-parse', `refs/heads/baseline/${opts.expectedParent}`], { allowFailure: true }).out || null
-    : null
-  if (remoteSha && opts.expectedParent && opts.expectedParent !== 'none' && localParentSha && remoteSha !== localParentSha) {
+  if (!remoteRef.ok) blockers.push('protected remote could not be read')
+  if (model.baselines.some((entry) => entry.__invalid || !/^BL-\d+$/.test(entry.baseline_id || '') || !/^[0-9a-f]{40,64}$/.test(entry.code_revision || ''))) blockers.push('persisted baseline metadata is invalid')
+  if (new Set(model.baselines.map((entry) => entry.baseline_id)).size !== model.baselines.length) blockers.push('persisted baseline IDs are duplicated')
+  if (!parentId && model.baselines.length) blockers.push('existing baseline history cannot be reset to no parent')
+  if (!/^refs\/heads\/baseline\/[A-Za-z0-9_./-]+$/.test(opts.baselineRef) || opts.baselineRef.includes('..')) blockers.push('promotion destination must be a protected baseline ref')
+  const parentMetadata = parentId ? model.baselines.find((entry) => entry.baseline_id === parentId) : null
+  const localParentSha = parentMetadata?.code_revision || null
+  if (parentId && (!parentMetadata || !/^[0-9a-f]{40,64}$/.test(localParentSha || ''))) blockers.push('parent baseline metadata has no immutable code SHA mapping')
+  if ((!parentId && remoteSha) || (parentId && remoteSha !== localParentSha)) {
     blockers.push(
-      `the parent baseline moved: remote ${opts.baselineRef} is ${remoteSha.slice(0, 12)} but ${opts.expectedParent} is ${localParentSha.slice(0, 12)}; re-integrate and re-verify`,
+      `the parent baseline moved: remote ${opts.baselineRef} is ${String(remoteSha).slice(0, 12)} but ${opts.expectedParent} is ${String(localParentSha).slice(0, 12)}; re-integrate and re-verify`,
     )
   }
 
   // ---- Build the pending metadata -----------------------------------------
   const existing = model.baselines.map((b) => b.baseline_id).filter(Boolean)
   const baselineId = nextBaselineId(existing)
-  const machineVerified = buckets.verified
-  const reviewIds = (model.contract.acceptance?.manual_reviews || []).map((r) => r.id)
-  const completedReviews = new Set(model.reviews.filter((r) => r.result === 'PASS').map((r) => r.review_id))
+  const machineVerified = coverage.filter(row => row.status === 'VERIFIED' && row.evidence.length > 0).map(row => row.id)
+  const definitions = model.contract.acceptance?.manual_reviews || []
+  const reviewIds = definitions.map(r => r.id)
+  const completedReviews = new Set(definitions.filter(definition => classifyManualReview(model.reviews.find(r => r.review_id === definition.id), definition, model, { candidate: evidence?.bindings?.code_revision, parentBaseline: parentId, trustedIssuer: cfg.ci?.trusted_issuer }).status === 'VERIFIED').map(r => r.id))
   const metadata = {
     baseline_id: baselineId,
     protected_ref: opts.baselineRef,
@@ -244,6 +307,8 @@ function main() {
         ...buckets.unmapped,
         ...buckets.standard_gap,
         ...buckets.stale_evidence,
+        ...buckets.current_failure,
+        ...buckets.review_pending,
       ],
       manual_reviews_pending: reviewIds.filter((id) => !completedReviews.has(id)),
       spine_manifest_digest: current.spine_manifest_digest,
@@ -252,12 +317,35 @@ function main() {
       validated_in: evidence?.environment?.kind || 'production_like_ci',
       image_digest: evidence?.environment?.image_digest || null,
       migration_digest: evidence?.bindings?.migration_digest || null,
-      staging_deployment_id: evidence?.environment?.deployment_id || null,
+      staging_deployment_id: evidence?.environment?.kind === 'staging' ? evidence.environment.deployment_id : null,
     },
     evidence_refs: evidence ? [evidence.evidence_id] : [],
     promotion_run_id: process.env.DSH_CI_RUN_ID || 'local-dry-run',
+    // Recorded so a later reader can tell an attested promotion from a
+    // not-yet-attested one instead of inferring safety from a missing field.
+    runtime_isolation: {
+      verified: evidence?.trust?.runtime_isolation_verified === true,
+      note: evidence?.trust?.runtime_isolation_verified === true
+        ? 'candidate runtime isolation was independently attested'
+        : 'candidate runtime isolation is not implemented or attested; recorded as a warning, not a promotion gate',
+    },
   }
 
+  if (opts.mode === 'MVP_READY') {
+    if (!evidence || evidence.environment?.kind !== cfg.mvpReadyEnvironment) blockers.push('MVP_READY requires the configured environment')
+    if (metadata.verification_scope.remaining_outcomes.length || metadata.verification_scope.manual_reviews_pending.length) blockers.push('MVP_READY requires every obligation and manual review closed')
+    if ((model.contract.unknowns || []).some((unknown) => !['resolved', 'closed'].includes(unknown.status))) blockers.push('MVP_READY has unresolved or deferred unknowns')
+    if (evidence) blockers.push(...assessMvpReady(model, evidence, evidence.release_receipt, { candidate: evidence.bindings.code_revision, parentBaseline: parentId, trustedIssuer: cfg.ci?.trusted_issuer }).blocking)
+    // Recompute readiness here; a verifier marker is never sufficient by itself.
+    if (evidence?.execution?.mvp_ready !== true) blockers.push('MVP_READY requires an explicit trusted full-contract readiness result')
+  }
+  let promotedAttempt = null
+  if (evidence) try {
+    promotedAttempt = attemptFromCI(evidence, model)
+    model.attempts = [...model.attempts.filter((entry) => entry.ci_ref !== evidence.evidence_id), promotedAttempt]
+    const budget = computeConvergence(model, { slice: evidence.scope.slice_id, candidate: evidence.bindings.code_revision, parentBaseline: parentId })
+    if (budget.blocked) blockers.push(`convergence budget or ledger is blocked: ${JSON.stringify(budget.invalid_entries)}`)
+  } catch (error) { blockers.push(`attempt history: ${error.message}`) }
   const ok = blockers.length === 0
   const report = {
     status: ok ? (opts.apply ? 'promoted' : 'ready') : 'blocked',
@@ -282,21 +370,45 @@ function main() {
   }
 
   // ---- Order: persist evidence and metadata, then conditional update -------
-  const metadataDir = join(root, 'ci', 'baseline')
-  mkdirSync(metadataDir, { recursive: true })
-  const metadataPath = join(metadataDir, `${baselineId}.json`)
-  writeFileSync(metadataPath, `${JSON.stringify(metadata, null, 2)}\n`, 'utf8')
-
   if (opts.apply) {
-    // A force-with-lease update is the conditional update: it fails if the remote ref
-    // no longer matches what this run observed as the parent.
-    const expected = opts.expectedParent && opts.expectedParent !== 'none' ? opts.expectedParent : null
-    if (expected && localParentSha) {
-      git(root, ['update-ref', opts.baselineRef, metadata.code_revision, localParentSha])
-    } else {
-      git(root, ['update-ref', opts.baselineRef, metadata.code_revision])
+    const stateRef = 'refs/heads/delivery-state/main'
+    const stateRemote = git(root, ['ls-remote', opts.remote, stateRef])
+    const stateParent = stateRemote.out.split(/\s+/)[0] || ''
+    if (stateParent) git(root, ['fetch', '--no-tags', opts.remote, stateParent])
+    git(root, ['fetch', '--no-tags', opts.remote, metadata.code_revision])
+    const metadataDir = join(root, 'ci', 'baseline')
+    mkdirSync(metadataDir, { recursive: true })
+    writeFileSync(join(metadataDir, `${baselineId}.json`), `${JSON.stringify(metadata, null, 2)}\n`, 'utf8')
+    const evidenceDir = join(root, 'ci', 'evidence')
+    mkdirSync(evidenceDir, { recursive: true })
+    for (const record of records) if (!record.__invalid && record.__file) {
+      const { __file, ...stored } = record
+      writeFileSync(join(evidenceDir, `${String(record.evidence_id).replace(/[^A-Za-z0-9_.-]/g, '_')}.json`), `${JSON.stringify(stored, null, 2)}\n`)
     }
-    const pushed = git(root, ['push', '--force-with-lease', opts.remote, `${opts.baselineRef}:${opts.baselineRef}`], { allowFailure: true })
+    if (opts.mode === 'MVP_READY') writeFileSync(join(root, 'ci', 'mvp-ready.json'), `${JSON.stringify({ mvp_ready: true, baseline_id: baselineId, code_revision: metadata.code_revision, image_digest: metadata.environment.image_digest, deployment_id: metadata.environment.staging_deployment_id, evidence_refs: metadata.evidence_refs, promotion_run_id: metadata.promotion_run_id }, null, 2)}\n`)
+    const accumulated = [...new Set([...loadSpine(root, cfg).caseIds, ...(evidence.scope.required_case_ids || [])])].sort()
+    const spinePath = resolve(root, cfg.paths.spineManifest)
+    mkdirSync(dirname(spinePath), { recursive: true })
+    writeFileSync(spinePath, `last_updated: ${JSON.stringify(new Date().toISOString())}\nupdated_by: ${JSON.stringify(metadata.promotion_run_id)}\ncase_ids: ${JSON.stringify(accumulated)}\n`, 'utf8')
+    const attemptsPath = resolve(root, cfg.paths.attemptsLog)
+    mkdirSync(dirname(attemptsPath), { recursive: true })
+    writeFileSync(attemptsPath, `${model.attempts.map((entry) => JSON.stringify(entry)).join('\n')}\n`, 'utf8')
+    metadata.accumulated_spine_case_ids = accumulated
+    metadata.accumulated_spine_manifest_digest = fileDigest(spinePath)
+    writeFileSync(join(metadataDir, `${baselineId}.json`), `${JSON.stringify(metadata, null, 2)}\n`, 'utf8')
+    const repo = git(root, ['rev-parse', '--show-toplevel']).out
+    const indexDir = mkdtempSync(join(repo, '.promotion-index-'))
+    let stateCommit
+    try {
+      const env = { ...process.env, GIT_INDEX_FILE: join(indexDir, 'index'), GIT_AUTHOR_NAME: 'Promotion CI', GIT_AUTHOR_EMAIL: 'promotion@example.invalid', GIT_COMMITTER_NAME: 'Promotion CI', GIT_COMMITTER_EMAIL: 'promotion@example.invalid' }
+      const indexed = (args) => execFileSync('git', args, { cwd: root, env, encoding: 'utf8' }).trim()
+      indexed(['read-tree', ...(stateParent ? [stateParent] : ['--empty'])])
+      indexed(['add', '--', 'ci/baseline', 'ci/evidence', cfg.paths.spineManifest, cfg.paths.attemptsLog])
+      const tree = indexed(['write-tree'])
+      stateCommit = indexed(['commit-tree', tree, ...(stateParent ? ['-p', stateParent] : []), '-m', `Persist ${baselineId} evidence and Spine`])
+    } finally { rmSync(indexDir, { recursive: true, force: true }) }
+    // Both durable state and baseline move in one compare-and-swap transaction.
+    const pushed = git(root, ['push', '--atomic', `--force-with-lease=${opts.baselineRef}:${localParentSha || ''}`, `--force-with-lease=${stateRef}:${stateParent}`, opts.remote, `${metadata.code_revision}:${opts.baselineRef}`, `${stateCommit}:${stateRef}`], { allowFailure: true })
     if (!pushed.ok) {
       process.stderr.write(`PROMOTION FAILED the protected ref was not advanced: ${pushed.err}\n`)
       process.stderr.write('metadata was persisted; the ref update is the part that failed.\n')
@@ -314,4 +426,4 @@ function main() {
   return 0
 }
 
-process.exit(main())
+process.exit(await main())

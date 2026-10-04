@@ -13,7 +13,8 @@
 [![Runtime deps: 0](https://img.shields.io/badge/runtime%20deps-0-brightgreen.svg)](#仓库结构)
 [![CI](https://github.com/wangxiaow/dsh-delivery-assured/actions/workflows/verify.yml/badge.svg)](https://github.com/wangxiaow/dsh-delivery-assured/actions/workflows/verify.yml)
 [![Implementation](https://img.shields.io/badge/implementation-v0.5-blueviolet.svg)](README.md)
-[![Local checks](https://img.shields.io/badge/local%20checks-passing-success.svg)](#已验证的结果)
+
+开发状态：本轮修复和本地回归记录见[修复报告](REPAIR_NOTES.md)；**运行时隔离仍未实现，已按 owner 决定从晋升硬门禁降级为写入 Baseline 元数据的告警**（真实隔离后端仍是欠账），部署门现在有了真实生产者（`ci-deploy-probe.mjs` 把打包产物装进干净目录并实际运行，再报告观测到的 revision 与 digest），未计数历史恢复仍欠工程实现；已增加精确 collector 手工重跑、单漏项定时补录请求及 counted-failure 留痕 resolution，但真实平台调度与审批尚未核验。尚未取得真实 CI Evidence、受保护 Baseline 晋升或真实部署证据；本地测试通过非完成，不宣称 MVP_READY。当前已有 origin/main 与 origin/standards/acceptance 本地跟踪引用，远端权限、保护和 CI 是否生效未核实；不是“无远端仓库”。
 
 </div>
 
@@ -29,8 +30,8 @@
 实现者顺手修改验收；修复当前错误破坏旧流程；沿用旧版本 PASS；
 最后才发现登录回调、迁移、配置或完整用户旅程跑不通。
 
-本项目把方案落成可执行的东西：三份模板、三类项目清单、五个脚本、
-两个 CI 工作流、一套权限声明，以及一个把它接进 DSH 会话的插件。
+本项目把方案落成可执行的东西：交付模板、三类项目清单、诊断脚本、
+三个 CI 工作流、一套权限声明，以及一个把它接进 DSH 会话的插件。
 
 ## 核心设计：权威边界
 
@@ -47,7 +48,7 @@
 具体约束：
 
 - `verify.mjs` 本地只产出诊断。退出码 0 只代表「这次指定的检查在这台机器上通过」。
-- 只有 `.github/workflows/verify.yml` 的验证 job 产出 `evidence.json`。
+- [verify 工作流](.github/workflows/verify.yml)保留观测产物；独立 CI 消费者确认精确来源。当前运行时隔离尚未实现或实证，这些观测不能冒充权威 Evidence。
 - 只有 `promote.yml` 的 Promotion job 持有推进 `refs/heads/baseline/*` 的凭据。
 - 插件暴露的五个工具**全部只读**，不写 Evidence、不晋升、不宣告 `MVP_READY`。
 - `.agent/STATE.yaml` 的 `DONE` 不是完成证据；Coverage 只从 Contract 与 CI 记录重算。
@@ -83,7 +84,7 @@
 │   ├── templates/                  #   INTENT.md / ELICITATION.md / CONTRACT.yaml / AGENTS.md
 │   │   └── checklists/             #   web_saas.yaml / cli.yaml / api.yaml
 │   ├── scripts/                    #   五个脚本 + lib/ 共享事实计算
-│   └── tests/                      #   YAML 子集解析器回归测试
+│   └── tests/                      #   YAML 解析器与模板完整性 unit 测试
 ├── plugins/dsh-delivery-assured/   # DSH 插件：五个只读工具 + 一个运行期 Skill
 ├── integrations/deepseek-harness/  # DSH 接入记录：锁定版本、实测坑、完成标准对照
 ├── project/                        # 首个真实项目（本操作包自身）
@@ -113,7 +114,7 @@ node ../packages/delivery-assured/scripts/check-gaps.mjs --phase slice --slice S
 node ../packages/delivery-assured/scripts/coverage.mjs --view mvp
 
 # 3. 换会话后的第一件事：恢复可信起点
-node ../packages/delivery-assured/scripts/resume.mjs
+node ../packages/delivery-assured/scripts/resume.mjs --offline
 
 # 4. 本地验证（诊断，不是证据）
 node ../packages/delivery-assured/scripts/verify.mjs --local --slice S1
@@ -144,12 +145,15 @@ DSH 在加载前会用自己的 `evaluatePluginCompatibility` 判定清单，不
 改完插件后 `node plugins/dsh-delivery-assured/test/compatibility.test.mjs` 会用**宿主真实的
 `defineTool`** 与 0.2.x 的 shell seam 复验一次；它已被接入构建门，改名或降级接口都会让构建失败。
 
-## 已验证的结果
+## 本地复核方法与开发状态
 
-复现全部检查：
+下面列出复核命令，不宣称最新测试数已经验证。宿主相关测试需要声明的 DSH 环境；本轮不访问用户 profile、不联网。模板测试仅为 unit，不修改或替代受保护验收 spec。
+
+从仓库根目录运行 unit 与本地自检：
 
 ```bash
 node packages/delivery-assured/tests/yaml.test.mjs
+node --test packages/delivery-assured/tests/templates.test.mjs
 node plugins/dsh-delivery-assured/test/smoke.mjs
 node plugins/dsh-delivery-assured/test/skill-registry.test.mjs
 node plugins/dsh-delivery-assured/test/compatibility.test.mjs
@@ -160,20 +164,14 @@ node tools/local-promotion-drill.mjs
 cd project && node ../packages/delivery-assured/scripts/verify.mjs --local --slice S1
 ```
 
-| 检查 | 结果 |
+| 范围 | 当前声明边界 |
 |---|---|
-| YAML 子集解析器回归测试 | 28 项通过 |
-| 插件自测（真实脚本 + 真实 shell） | 50 项通过 |
-| 插件 Skill 经真实 DSH 注册表读回 | 13 项通过（含「缺正文被拒」负向对照） |
-| **插件运行时契约（宿主真实 `defineTool` + shell seam）** | **67 项通过，覆盖桌面版 `0.2.0-rc.2` 与 0.1.5 线两个目标** |
-| CI preflight（workflow 每个路径、编码与步骤） | 82 项通过 |
-| Markdown 结构（表格、链接、锚点、围栏） | 81 项通过 |
-| 构建门在缺插件的裸包副本中仍通过 | 4 项通过（负向对照） |
-| `check-gaps` 三个阶段 | contract / acceptance / slice 均无阻塞 |
-| 验收 harness | 8/8 必需用例通过 |
-| 本地六个门 | 4 通过、1 有理由地不适用、1 声明为 CI-only |
-| 晋升链路本地演练 | 30 项通过（含真实 evidence 绑定、部署门观测值与条件检查） |
-| 插件在新宿主 profile 中组合 | 通过（`--dump-config` 输出包含该插件） |
+| unit、插件自检、preflight、本地六个门 | 本地诊断；结果与计数须以本次实际输出为准，历史通过数不证明当前版本 |
+| 晋升链路本地演练 | 测试夹具/模拟链路，不是真实 CI Evidence、远端保护或 Baseline 晋升 |
+| DSH profile 加载与组合 | 接入文档保留历史记录；当前宿主与重启效果待复核 |
+| 真实 CI、Baseline、部署及最终 Review | 尚未取得当前版本的真实证据，交付未完成 |
+
+业务脚本及 CLI 必须从 project/ 运行（如上面的 `cd project`），或显式指定实际项目路径；根目录是操作包仓库，不是业务输入根。模板仍为 draft/unknown，需完成产品澄清与确认，字段齐全不等于 Gate 通过。
 
 ### 为什么需要一个「运行时契约」测试
 
@@ -194,9 +192,7 @@ cd project && node ../packages/delivery-assured/scripts/verify.mjs --local --sli
 
 ### CI preflight 是什么
 
-workflow 在配好远端之前无法运行，所以里面的坏路径只有等第一次 `git push`
-之后才暴露——偏偏那是最不该出错的地方。`tools/ci-preflight.test.mjs` 把这一类缺陷变成
-构建期失败，它检查：
+本地 origin/main 与 origin/standards/acceptance 跟踪引用已经存在，但不证明远端权限、分支保护或真实 CI 可用。`tools/ci-preflight.test.mjs` 在真实 CI 接通前检查静态缺陷，它检查：
 
 - workflow 确实位于 `.github/workflows/`（放在包内部 GitHub 永远不会执行）
 - 每个 `node <path>` 在磁盘上真实存在

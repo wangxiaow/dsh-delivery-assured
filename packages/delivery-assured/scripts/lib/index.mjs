@@ -64,4 +64,4 @@ export {
   scanDriverForAssertions,
   specDiffAgainstProtected,
 } from './model.mjs'
-export { STATUS, BLOCKING_STATUSES, blockingForView, collectCriticalViolations, coverageRows, proveCase } from './coverage-core.mjs'
+export { STATUS, BLOCKING_STATUSES, blockingForView, collectCriticalViolations, coverageRows, proveCase, classifyManualReview } from './coverage-core.mjs'

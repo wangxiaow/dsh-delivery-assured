@@ -15,8 +15,9 @@
 
 import { execFileSync } from 'node:child_process'
 import { parseYaml } from '../../packages/delivery-assured/scripts/lib/yaml.mjs'
+import { obligationIndex } from '../../packages/delivery-assured/scripts/lib/common.mjs'
 
-const SPEC_DIR = 'tests/acceptance/spec'
+const SPEC_DIR = 'project/tests/acceptance/spec'
 const MANIFEST = `${SPEC_DIR}/manifest.yaml`
 
 function parse(argv) {
@@ -51,7 +52,7 @@ function show(repo, ref, path) {
 }
 
 function changedPaths(repo, oldRef, newRef) {
-  const result = git(repo, ['diff', '--name-status', oldRef, newRef, '--', SPEC_DIR, 'ci/verifier.yaml'], { allowFailure: true })
+  const result = git(repo, ['diff', '--name-status', oldRef, newRef, '--', SPEC_DIR, 'project/ci/verifier.yaml', 'project/.agent/CONTRACT.yaml', 'project/.agent/project.yaml'], { allowFailure: true })
   if (!result.ok) return null
   if (result.out === '') return []
   return result.out.split('\n').map((line) => {
@@ -78,7 +79,7 @@ function main() {
   if (!oldExists) {
     // Nothing is frozen yet: the first standard is established by the owner, not by
     // this automatic path, so it is accepted and recorded as such.
-    accepts.push({ kind: 'initial_standard', detail: `${opts.oldRef} does not exist yet` })
+    rejects.push({ reason: 'initial standard requires an owner-established protected revision' })
     return report(opts, accepts, rejects)
   }
 
@@ -89,7 +90,7 @@ function main() {
   }
 
   for (const change of changes) {
-    if (change.path === 'ci/verifier.yaml') {
+    if (!change.path.startsWith(`${SPEC_DIR}/`)) {
       rejects.push({ path: change.path, reason: 'the verifier configuration may not be changed through the automatic path' })
       continue
     }
@@ -116,9 +117,11 @@ function main() {
 
   // The manifest may only gain cases, and every new case must map to an obligation
   // that already existed.
+  const contractText = show(opts.repo, opts.oldRef, 'project/.agent/CONTRACT.yaml')
+  const obligations = contractText ? obligationIndex(parseYaml(contractText)) : new Map()
   const oldManifest = show(opts.repo, opts.oldRef, MANIFEST)
   const newManifest = show(opts.repo, opts.newRef, MANIFEST)
-  if ((oldManifest === null) !== (newManifest === null)) {
+  if (oldManifest === null || newManifest === null) {
     rejects.push({ path: MANIFEST, reason: 'the manifest was added or removed rather than appended to' })
   } else if (oldManifest !== null && newManifest !== null) {
     let oldDoc
@@ -130,8 +133,13 @@ function main() {
       process.stderr.write(`ci-standards-diff: manifest is not readable: ${error.message}\n`)
       return 2
     }
+    if (!Array.isArray(oldDoc.cases) || !oldDoc.cases.length || !Array.isArray(newDoc.cases) || !newDoc.cases.length) rejects.push({ path: MANIFEST, reason: 'both frozen manifests must contain cases' })
+    const oldMeta = { ...oldDoc }; delete oldMeta.cases
+    const newMeta = { ...newDoc }; delete newMeta.cases
+    if (JSON.stringify(oldMeta) !== JSON.stringify(newMeta)) rejects.push({ path: MANIFEST, reason: 'manifest metadata changed rather than case append' })
     const oldCases = new Map((oldDoc.cases || []).map((c) => [c.id, c]))
     const newCases = new Map((newDoc.cases || []).map((c) => [c.id, c]))
+    if (oldCases.size !== oldDoc.cases?.length || newCases.size !== newDoc.cases?.length) rejects.push({ path: MANIFEST, reason: 'duplicate case ID' })
     for (const [id, testCase] of oldCases) {
       if (!newCases.has(id)) {
         rejects.push({ path: MANIFEST, reason: `case ${id} was removed` })
@@ -148,15 +156,18 @@ function main() {
     }
     for (const id of added) {
       const testCase = newCases.get(id)
-      if (!Array.isArray(testCase.obligation_ids) || testCase.obligation_ids.length === 0) {
-        rejects.push({ path: MANIFEST, reason: `new case ${id} maps to no obligation` })
+      if (!Array.isArray(testCase.obligation_ids) || testCase.obligation_ids.length === 0 || testCase.obligation_ids.some((obligation) => !obligations.has(obligation))) {
+        rejects.push({ path: MANIFEST, reason: `new case ${id} must map only to existing obligations` })
       }
+      if (testCase.required !== true || testCase.method !== 'automated' || !Array.isArray(testCase.environments) || !testCase.environments.length || !Array.isArray(testCase.assertions) || !testCase.assertions.length) rejects.push({ path: MANIFEST, reason: `new case ${id} lacks required machine acceptance declarations` })
+      const specRef = `project/${testCase.spec_ref || ''}`
+      if (!specRef.startsWith(`${SPEC_DIR}/`) || specRef.includes('..') || !changes.some((change) => change.status === 'A' && change.path === specRef)) rejects.push({ path: MANIFEST, reason: `new case ${id} must refer to a new independent spec file` })
+      const body = show(opts.repo, opts.newRef, specRef)
+      if (!body || /\.(skip|only)\s*\(|\b(skip|only)\s*:\s*true/.test(body)) rejects.push({ path: specRef, reason: 'new spec is missing or filtered' })
     }
+    const newRefs = new Set(added.map((id) => `project/${newCases.get(id).spec_ref}`))
+    for (const change of changes) if (change.status === 'A' && change.path !== MANIFEST && !newRefs.has(change.path)) rejects.push({ path: change.path, reason: 'added spec file is not referenced by a new case' })
   }
-
-  // A new spec file must be referenced by at least one new case.
-  const referenced = new Set([...accepts.filter((a) => a.kind === 'added_cases').flatMap((a) => a.case_ids || [])])
-  void referenced
 
   return report(opts, accepts, rejects)
 }

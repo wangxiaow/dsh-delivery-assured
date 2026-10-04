@@ -1,0 +1,39 @@
+name: reconcile verification history
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '17 */4 * * *'
+permissions:
+  contents: read
+  actions: write
+concurrency:
+  group: delivery-history-reconciliation
+  cancel-in-progress: false
+jobs:
+  plan:
+    if: github.ref == 'refs/heads/main'
+    name: queue one oldest missing receipt collector
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Restore immutable receipt snapshot without state write credentials
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin refs/heads/delivery-state/main
+          STATE_SHA=$(git rev-parse FETCH_HEAD)
+          mkdir state-snapshot
+          git -c core.autocrlf=false archive --output=state.tar "$STATE_SHA" project/ci/recording
+          tar -xf state.tar -C state-snapshot
+      - name: Audit history and queue exact state-only collector
+        env:
+          DSH_RECONCILE_ENVIRONMENT: main-history-planner
+          DSH_ACTIONS_DISPATCH_TOKEN: ${{ github.token }}
+        run: node ci/tools/ci-reconcile-run.mjs state-snapshot/project/ci/recording/receipts

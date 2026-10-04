@@ -6,7 +6,7 @@
  * acceptance manifest and CI records; `.agent/STATE.yaml` is never consulted.
  */
 
-import { classifyEvidence } from './model.mjs'
+import { caseOutcomeFromEvidence, classifyEvidence, isPlaceholder } from './model.mjs'
 
 export const STATUS = {
   UNMAPPED: 'UNMAPPED',
@@ -29,23 +29,8 @@ export const BLOCKING_STATUSES = new Set([
  * Prove one case on the current candidate: prefer a fresh PASS, otherwise report
  * the best record so a stale or failed result is visible rather than hidden.
  */
-export function proveCase(model, caseId, { codeRevision, parentBaseline, trustedIssuer }) {
-  let best = null
-  for (const record of model.evidence) {
-    const result = (record.execution?.case_results || []).find((r) => r.case_id === caseId)
-    if (!result) continue
-    const classified = classifyEvidence(record, { model, codeRevision, parentBaseline, trustedIssuer })
-    const candidate = {
-      outcome: result.outcome,
-      fresh: classified.fresh,
-      reasons: classified.reasons,
-      ref: record.evidence_id,
-    }
-    if (!best) best = candidate
-    else if (!best.fresh && candidate.fresh) best = candidate
-    else if (best.outcome !== 'passed' && candidate.outcome === 'passed') best = candidate
-  }
-  return best
+export function proveCase(model, caseId, options) {
+  return caseOutcomeFromEvidence(model.evidence, caseId, { ...options, model })
 }
 
 /** Critical-rule violations that must block promotion immediately. */
@@ -53,7 +38,9 @@ export function collectCriticalViolations(model, options) {
   const out = []
   for (const rule of model.contract.business_rules || []) {
     if (rule.severity !== 'critical') continue
-    const cases = model.acceptance.cases.filter((c) => (c.obligation_ids || []).includes(rule.id))
+    const allCases = model.acceptance.cases.filter(c => (c.obligation_ids || []).includes(rule.id))
+    const cases = options.requiredCaseIds ? allCases.filter(c => options.requiredCaseIds.includes(c.id)) : allCases
+    if (options.requiredCaseIds && cases.length === 0 && !options.obligationIds?.includes(rule.id)) continue
     if (cases.length === 0) {
       out.push({
         rule: rule.id,
@@ -72,7 +59,7 @@ export function collectCriticalViolations(model, options) {
           message: `${testCase.id} has no current record; an applicable Critical rule without a current pass blocks promotion`,
           pending: true,
         })
-      } else if (proof.fresh && proof.outcome !== 'passed') {
+      } else if (proof.current && proof.outcome !== 'passed') {
         out.push({ rule: rule.id, case_id: testCase.id, message: `${testCase.id} recorded ${proof.outcome}` })
       } else if (!proof.fresh) {
         // A stale record is not a current pass, and Critical correctness may not be
@@ -88,6 +75,23 @@ export function collectCriticalViolations(model, options) {
     }
   }
   return out
+}
+
+export function classifyManualReview(record, definition, model, { candidate, parentBaseline, trustedIssuer }) {
+  const result = (status, detail) => ({ review_id: definition.id, status, detail })
+  if (!record || record.review_id !== definition.id) return result(STATUS.REVIEW_PENDING, 'no Review Record')
+  if (record.result !== 'PASS') return result(STATUS.CURRENT_FAILURE, `review result ${record.result}`)
+  if (typeof record.confirmation_ref !== 'string' || isPlaceholder(record.confirmation_ref) || (record.reviewer !== definition.reviewer && record.reviewer_role !== definition.reviewer)) return result(STATUS.REVIEW_PENDING, 'no matching owner confirmation')
+  const b = record.bindings || {}
+  if (!candidate || b.code_revision !== candidate) return result(STATUS.STALE_EVIDENCE, 'Review Record is bound to another code revision')
+  for (const key of ['contract_digest', 'acceptance_manifest_digest', 'acceptance_digest', 'verifier_config_digest']) {
+    if (!Object.hasOwn(b, key) || b[key] !== model.currentBindings[key]) return result(STATUS.STALE_EVIDENCE, `Review Record ${key} differs from current standard`)
+  }
+  const evidence = model.evidence.find(e => classifyEvidence(e, { model, codeRevision: candidate, parentBaseline, trustedIssuer }).fresh
+    && b.contract_revision === e.bindings.contract_revision && b.acceptance_revision === e.bindings.acceptance_revision
+    && b.image_digest === e.environment.image_digest && b.deployment_id === e.environment.deployment_id)
+  if (!evidence) return result(STATUS.STALE_EVIDENCE, 'Review Record is not bound to the verified deployment and standards')
+  return result(STATUS.VERIFIED, `confirmed by ${record.reviewer} on ${b.deployment_id}`)
 }
 
 /**
@@ -110,6 +114,11 @@ export function coverageRows(model, { candidate = null, parentBaseline = null, t
     const sliceId = slice.id || slice.__file
     for (const obligationId of slice.obligations || []) add(slicesByObligation, obligationId, sliceId)
     for (const outcomeId of slice.outcomes || []) add(slicesByObligation, outcomeId, sliceId)
+    for (const c of model.acceptance.cases) if ((slice.acceptance || []).includes(c.id)) for (const id of [...(c.obligation_ids || []), ...(c.outcome_ids || [])]) add(slicesByObligation, id, sliceId)
+  }
+  // A current verified run also records which Slice preserved old Spine cases.
+  for (const record of model.evidence) if (classifyEvidence(record, { model, codeRevision: candidate, parentBaseline, trustedIssuer }).fresh) {
+    for (const c of model.acceptance.cases) if (record.scope.required_case_ids.includes(c.id)) for (const id of [...(c.obligation_ids || []), ...(c.outcome_ids || [])]) add(slicesByObligation, id, record.scope.slice_id)
   }
 
   const casesByObligation = new Map()
@@ -136,25 +145,12 @@ export function coverageRows(model, { candidate = null, parentBaseline = null, t
     for (const testCase of automated) {
       const proof = proveCase(model, testCase.id, { codeRevision: candidate, parentBaseline, trustedIssuer })
       if (!proof) continue
-      evidence.push({ case_id: testCase.id, outcome: proof.outcome, fresh: proof.fresh, evidence_id: proof.ref })
-      if (proof.outcome === 'failed' || proof.outcome === 'errored') failing ||= { case_id: testCase.id, proof }
-      else if (proof.outcome === 'passed' && !proof.fresh) stale ||= { case_id: testCase.id, proof }
+      evidence.push({ case_id: testCase.id, outcome: proof.outcome, fresh: proof.fresh, attested: proof.attested, evidence_id: proof.ref })
+      if (proof.current && proof.outcome !== 'passed') failing ||= { case_id: testCase.id, proof }
+      else if (!proof.fresh) stale ||= { case_id: testCase.id, proof }
     }
 
-    const reviewProofs = manualReviews.map((review) => {
-      const record = reviewRecords.get(review.id)
-      if (!record) return { review_id: review.id, status: STATUS.REVIEW_PENDING, detail: 'no Review Record' }
-      if (record.result !== 'PASS') {
-        return { review_id: review.id, status: STATUS.CURRENT_FAILURE, detail: `result ${record.result}` }
-      }
-      if (candidate && record.bindings?.code_revision !== candidate) {
-        return { review_id: review.id, status: STATUS.STALE_EVIDENCE, detail: 'bound to another revision' }
-      }
-      if (!record.confirmation_ref) {
-        return { review_id: review.id, status: STATUS.REVIEW_PENDING, detail: 'no owner confirmation reference' }
-      }
-      return { review_id: review.id, status: STATUS.VERIFIED, detail: `confirmed by ${record.reviewer}` }
-    })
+    const reviewProofs = manualReviews.map(review => classifyManualReview(reviewRecords.get(review.id), review, model, { candidate, parentBaseline, trustedIssuer }))
 
     // The reason a required obligation is not done has a priority order, and the
     // most specific blocking fact wins: a recorded failure, then a stale record,
@@ -162,7 +158,10 @@ export function coverageRows(model, { candidate = null, parentBaseline = null, t
     // Reporting UNMAPPED for an obligation that already has a failing record
     // would discard that recorded fact.
     let status = STATUS.VERIFIED
-    let reason = 'current passing record from the trusted verifier'
+    // Never "from the trusted verifier": this reader cannot verify origin, and a
+    // hand-written file satisfies the same structural checks. The label states
+    // what was observed and leaves authority where v0.5 puts it — in CI.
+    let reason = 'current complete record present locally (origin not independently verified here)'
     if (failing) {
       status = STATUS.CURRENT_FAILURE
       reason = `${failing.case_id} recorded ${failing.proof.outcome}`
@@ -178,6 +177,9 @@ export function coverageRows(model, { candidate = null, parentBaseline = null, t
     } else if (automated.length === 0 && manualReviews.length === 0 && manualCases.length === 0) {
       status = STATUS.STANDARD_GAP
       reason = 'no required automated or manual acceptance covers it'
+    } else if (manualCases.length > 0 && manualReviews.length === 0) {
+      status = STATUS.REVIEW_PENDING
+      reason = 'manual acceptance has no bound owner Review Record'
     } else if (reviewProofs.some((r) => r.status !== STATUS.VERIFIED)) {
       const pending = reviewProofs.find((r) => r.status !== STATUS.VERIFIED)
       status = pending.status === STATUS.CURRENT_FAILURE ? STATUS.CURRENT_FAILURE : STATUS.REVIEW_PENDING
@@ -195,8 +197,18 @@ export function coverageRows(model, { candidate = null, parentBaseline = null, t
       status,
       reason,
       evidence,
+      evidence_attested: evidence.length > 0 && evidence.every((entry) => entry.attested === true),
       review_proofs: reviewProofs,
     })
+  }
+
+  // A Journey is a product result, not the PASS of one convenient parent case.
+  for (const row of rows.filter(r => r.kind === 'journey')) {
+    const incomplete = rows.find(child => child.parent === row.id && child.required && child.status !== STATUS.VERIFIED)
+    if (incomplete && row.status === STATUS.VERIFIED) {
+      row.status = incomplete.status
+      row.reason = `required result ${incomplete.id}: ${incomplete.reason}`
+    }
   }
 
   const buckets = {
@@ -230,5 +242,5 @@ export function blockingForView(buckets, view) {
       ...buckets.review_pending,
     ]
   }
-  return [...buckets.unmapped, ...buckets.standard_gap, ...buckets.current_failure]
+  return [...buckets.unmapped, ...buckets.standard_gap, ...buckets.current_failure, ...buckets.pending_implementation, ...buckets.stale_evidence]
 }

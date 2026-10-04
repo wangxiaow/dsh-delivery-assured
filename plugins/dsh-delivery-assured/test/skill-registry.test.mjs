@@ -97,7 +97,17 @@ entry.apply(
   { packRoot: join(dirname(pluginRoot), 'packages', 'delivery-assured'), projectRoot: join(dirname(pluginRoot), 'project') },
 )
 
-check('the plugin registered its five tools', registeredTools.length === 5, String(registeredTools.length))
+const defineToolModule = await import(new URL('../lib/define-tool.js', import.meta.url).href)
+const verdict = defineToolModule.defineToolVerdict
+if (verdict === 'ok') {
+  check('the plugin registered its five tools', registeredTools.length === 5, String(registeredTools.length))
+} else {
+  // This suite runs against whichever palette it can resolve, which may be a different
+  // prerelease line; the contract then is to withhold every tool, loudly. Tool
+  // behaviour under the real host is asserted by host-resolution.test.mjs.
+  check('an off-line helper withholds every tool', registeredTools.length === 0, String(registeredTools.length))
+  check('and says why', warnings.some((w) => /NOT registering tools/.test(w)), warnings.join(' | ').slice(0, 160))
+}
 
 const listed = await registry.list({})
 const names = (Array.isArray(listed) ? listed : []).map((s) => s.name)
@@ -121,7 +131,11 @@ check(
   /Unknowns Gate/.test(loaded?.content || '') && /final Journey Review/i.test(loaded?.content || ''),
 )
 check('the loaded skill keeps whenToUse', typeof loaded?.whenToUse === 'string' && loaded.whenToUse.length > 20)
-check('no registry warning was raised', warnings.length === 0, warnings.join(' | '))
+check(
+  'no registry warning was raised for the skill',
+  !warnings.some((w) => !/NOT registering tools/.test(w)),
+  warnings.join(' | ').slice(0, 200),
+)
 
 // Negative control: a definition without a body must be rejected by the same path,
 // which proves the check above is actually exercised.

@@ -44,7 +44,11 @@ for (const entry of results) {
   byId.set(entry.case_id, entry)
 }
 
-const requiredCases = acceptance.cases.filter((c) => c.required === true && c.method === 'automated').map((c) => c.id)
+const requiredCases = process.env.DSH_REQUIRED_CASE_IDS
+  ? JSON.parse(process.env.DSH_REQUIRED_CASE_IDS)
+  : acceptance.cases.filter(c => c.required === true && c.method === 'automated').map(c => c.id)
+if (!Array.isArray(requiredCases) || !requiredCases.length || new Set(requiredCases).size !== requiredCases.length) failures.push('Required case set is empty or duplicated')
+if (process.env.DSH_VERIFICATION_RUN_TOKEN && report.run_token !== process.env.DSH_VERIFICATION_RUN_TOKEN) failures.push('results belong to another verification invocation')
 for (const caseId of requiredCases) {
   if (!declared.has(caseId)) failures.push(`required case ${caseId} is not declared by any spec file`)
   const entry = byId.get(caseId)
@@ -62,7 +66,7 @@ for (const caseId of spine.caseIds) {
   else if (entry.outcome !== 'passed') failures.push(`spine case ${caseId} recorded ${entry.outcome}`)
 }
 
-const known = new Set([...acceptance.cases.map((c) => c.id), ...spine.caseIds])
+const known = new Set([...requiredCases, ...spine.caseIds])
 for (const entry of results) {
   if (!known.has(entry.case_id)) {
     failures.push(`case ${entry.case_id} ran but is neither in the manifest nor in the spine`)

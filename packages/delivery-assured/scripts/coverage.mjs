@@ -16,6 +16,7 @@
 import { EXIT, InputError, abs, findProjectRoot, finish, gitRevision, parseArgs, rel } from './lib/common.mjs'
 import { blockingForView, collectCriticalViolations, coverageRows } from './lib/coverage-core.mjs'
 import { loadModel, scanDriverForAssertions, specDiffAgainstProtected } from './lib/model.mjs'
+import { scopeForSlice } from './lib/selection.mjs'
 
 function main() {
   const opts = parseArgs(process.argv.slice(2), {
@@ -50,10 +51,14 @@ function main() {
 
   const driverFindings = scanDriverForAssertions(root)
   const specDiff = specDiffProtected(root)
-  const criticalViolations = collectCriticalViolations(model, { codeRevision: candidate, parentBaseline, trustedIssuer })
-  const blocking = blockingForView(buckets, view)
-
   const sliceRows = currentSliceRows(model, opts.slice)
+  if (view === 'slice' && sliceRows.length !== 1) throw new InputError('slice view needs one explicit current Slice')
+  const selected = view === 'slice' ? scopeForSlice(model, sliceRows[0].id) : null
+  const caseIds = selected?.caseIds || null
+  const scope = new Set(selected?.obligationIds || [])
+  const scopedBuckets = view === 'slice' ? Object.fromEntries(Object.entries(buckets).map(([name, ids]) => [name, ids.filter(id => scope.has(id))])) : buckets
+  const criticalViolations = collectCriticalViolations(model, { codeRevision: candidate, parentBaseline, trustedIssuer, requiredCaseIds: caseIds, obligationIds: [...scope] })
+  const blocking = blockingForView(scopedBuckets, view)
   const code = blocking.length > 0 || criticalViolations.length > 0 || specDiff.diffs.length > 0 || driverFindings.length > 0
     ? EXIT.FAIL
     : EXIT.PASS

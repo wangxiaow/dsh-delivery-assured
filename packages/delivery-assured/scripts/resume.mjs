@@ -14,9 +14,10 @@
  *             2 input/tool error.
  */
 
-import { EXIT, InputError, abs, findProjectRoot, finish, gitDirty, gitRevision, parseArgs, remoteRef, rel } from './lib/common.mjs'
-import { STATUS, coverageRows } from './lib/coverage-core.mjs'
+import { EXIT, InputError, findProjectRoot, finish, gitDirty, gitRevision, parseArgs, remoteRef } from './lib/common.mjs'
+import { coverageRows } from './lib/coverage-core.mjs'
 import { loadModel } from './lib/model.mjs'
+import { computeConvergence } from './lib/convergence.mjs'
 
 function main() {
   const opts = parseArgs(process.argv.slice(2), {
@@ -62,10 +63,12 @@ function main() {
 
   // 2. CI evidence, attempts and deployment state.
   const trustedIssuer = model.cfg.ci?.trusted_issuer || null
-  const trusted = model.evidence.filter((e) => !trustedIssuer || e.issuer?.identity === trustedIssuer)
-  const untrusted = model.evidence.length - trusted.length
-  const attempts = model.attempts
-  const lastAttempt = attempts.length > 0 ? attempts[attempts.length - 1] : null
+  // An issuer string is a label any author can write, so this count says
+  // "matches the configured name", never "was produced by the trusted job".
+  // Independent attestation belongs to the CI consumer, not to this reader.
+  const issuerMatch = model.evidence.filter((e) => !trustedIssuer || e.issuer?.identity === trustedIssuer)
+  const otherIssuers = model.evidence.length - issuerMatch.length
+  let lastAttempt = null
   const stateHint = model.state || {}
 
   // 3. Recompute Coverage.
@@ -76,7 +79,10 @@ function main() {
   else if (dirty.length > 0) notes.push(`${dirty.length} local change(s) are an unverified Candidate and were not touched`)
 
   // 5. Budget position.
-  const budget = budgetPosition(model, attempts)
+  const budget = computeConvergence(model, { candidate, parentBaseline: localBaseline?.baseline_id || null })
+  lastAttempt = budget.last_attempt
+  for (const problem of budget.invalid_entries) blockers.push(`attempt history line ${problem.line}: ${problem.message}`)
+  for (const problem of budget.critical_open) blockers.push(`Critical ${problem}`)
 
   // 6. Suggested action.
   const suggestion = nextAction({ model, buckets, blockers, budget, remoteState, localBaseline, trustedIssuer })
@@ -93,7 +99,7 @@ function main() {
     `remote ref   : ${opts.offline ? '(not read)' : remoteState.sha ? `${remoteState.sha.slice(0, 12)} on ${remote}` : `absent on ${remote}`}`,
   )
   human.push(
-    `evidence     : ${model.evidence.length} local record(s), ${trusted.length} from the trusted issuer${trustedIssuer ? ` (${trustedIssuer})` : ' (no trusted issuer configured)'}${untrusted ? `, ${untrusted} untrusted` : ''}`,
+    `evidence     : ${model.evidence.length} local record(s), ${issuerMatch.length} naming the configured issuer${trustedIssuer ? ` (${trustedIssuer})` : ' (no trusted issuer configured)'}${otherIssuers ? `, ${otherIssuers} naming another issuer` : ''}; origin not verified here, so none of them is independently attested`,
   )
   human.push(`current slice: ${stateHint.current_slice || model.slices.find((s) => s.status && s.status !== 'VERIFIED_DONE')?.id || '(none declared)'}`)
   human.push('')
@@ -118,7 +124,8 @@ function main() {
   )
   human.push(`  last failure: ${lastAttempt ? `${lastAttempt.attempt_id} ${lastAttempt.result} — ${lastAttempt.hypothesis}` : '(none recorded)'}`)
   if (budget.requiresReplan) human.push('  BLOCK the attempt window is exhausted: write a Replan Record before another attempt')
-  if (budget.blocked) human.push('  BLOCK the total attempt budget is exhausted: this needs an explicit budget or scope decision from the owner')
+  if (budget.budget_blocked) human.push('  BLOCK the total attempt budget is exhausted: this needs an explicit budget or scope decision from the owner')
+  if (budget.terminal_passed) human.push('  final allowed attempt passed; no budget exhaustion failure is inferred')
   human.push('')
   for (const blocker of blockers) human.push(`BLOCK ${blocker}`)
   for (const note of notes) human.push(`note  ${note}`)
@@ -139,6 +146,8 @@ function main() {
     human,
     json: {
       project: root,
+      diagnostic_only: true,
+      offline: opts.offline === true,
       candidate,
       dirty,
       baseline_ref: baselineRef,
@@ -150,7 +159,14 @@ function main() {
             verification_scope: localBaseline.verification_scope,
           }
         : null,
-      evidence: { total: model.evidence.length, trusted: trusted.length, trusted_issuer: trustedIssuer },
+      evidence: {
+        total: model.evidence.length,
+        issuer_match: issuerMatch.length,
+        other_issuer: otherIssuers,
+        configured_issuer: trustedIssuer,
+        independently_attested: 0,
+        note: 'this reader cannot verify where a local record came from; only the CI consumer and the Promotion job check the authenticated platform receipt',
+      },
       current_slice: stateHint.current_slice || null,
       owed: {
         unmapped: buckets.unmapped,
@@ -176,48 +192,13 @@ function pad(text, width) {
   return s.length >= width ? s : s + ' '.repeat(width - s.length)
 }
 
-function budgetPosition(model, attempts) {
-  const limits = model.cfg.budget
-  const total = attempts.filter((a) => a.result !== 'infra_aborted').length
-  const replans = attempts.filter((a) => a.replan).length + (model.state?.replans || 0)
-  const byRootCause = new Map()
-  for (const attempt of attempts) {
-    const key = attempt.root_cause_key || `${attempt.slice_id}:unspecified`
-    byRootCause.set(key, (byRootCause.get(key) || 0) + 1)
-  }
-  const maxSameRootCause = byRootCause.size === 0 ? 0 : Math.max(...byRootCause.values())
-  let noProgressStreak = 0
-  for (let i = attempts.length - 1; i >= 0; i -= 1) {
-    const attempt = attempts[i]
-    if (attempt.result === 'infra_aborted') continue
-    const previous = attempts[i - 1]
-    const improved =
-      previous &&
-      typeof attempt.required_passed === 'number' &&
-      typeof previous.required_passed === 'number' &&
-      (attempt.required_passed > previous.required_passed ||
-        (attempt.spine_failures ?? 0) < (previous.spine_failures ?? 0))
-    if (attempt.result === 'passed' || improved) break
-    noProgressStreak += 1
-  }
-  return {
-    limits,
-    total,
-    replans,
-    maxSameRootCause,
-    noProgressStreak,
-    requiresReplan: maxSameRootCause >= limits.same_root_cause_limit || noProgressStreak >= limits.no_progress_window,
-    blocked: total >= limits.total_attempt_limit || replans >= limits.replan_limit + 1,
-  }
-}
-
 function nextAction({ model, buckets, blockers, budget, remoteState, localBaseline, trustedIssuer }) {
   const out = []
   if (blockers.length > 0) {
     out.push('resolve the blocking condition above before any further promotion attempt')
     return out
   }
-  if (budget.blocked) {
+  if (budget.budget_blocked) {
     out.push('stop: the attempt budget is exhausted; the owner must adjust the budget or the product goal')
     return out
   }

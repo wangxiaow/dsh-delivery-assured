@@ -9,8 +9,10 @@
  * Those actions live in the external CI jobs, and a session cannot perform them.
  */
 
-import { defineTool, defineToolIsPassThrough, defineToolSource } from './define-tool.js'
+import { defineTool, defineToolIsPassThrough, defineToolSource, defineToolVerdict, defineToolVerdictReason, schemaIsProviderSafe } from './define-tool.js'
 import { buildContext, resolvePackRoot, resolveProjectRoot, runScript, summarize } from './bridge.js'
+import { buildGuard } from './guard.js'
+import { createKernel } from './kernel.js'
 import { SKILL_DESCRIPTION, SKILL_MARKDOWN, SKILL_NAME, SKILL_WHEN_TO_USE } from './skill.js'
 
 export const name = 'delivery-assured'
@@ -37,6 +39,35 @@ function renderResult(result) {
 export function apply(ctx, config = {}) {
   const workspace = config.workspace || process.cwd()
 
+  // A definition the host cannot project is not a cosmetic problem: the provider
+  // receives `tool.parameters` verbatim, rejects the function schema, and the whole
+  // session dies with `Invalid schema for function ... got 'type: null'`. Two
+  // independent checks therefore stand in front of registration, and either one
+  // withholds every tool (the skill, guard and kernel still load):
+  //   1. the helper must be the hosting runtime's own (a pass-through or a foreign
+  //      line is refused — the pass-through is the case that broke a live session);
+  //   2. each compiled definition must be an object-rooted schema with no null node.
+  const refused = defineToolVerdict === 'refuse'
+  if (refused) {
+    ctx.logger?.error?.(
+      `delivery-assured: NOT registering tools — ${defineToolVerdictReason} (defineTool=${defineToolSource}). ` +
+        'An uncompiled or foreign definition is forwarded to the model provider as-is and fails the session with an invalid function schema. ' +
+        'The skill, the protected-path guard and the kernel still load. Install the plugin into the runtime that hosts it (or set DSH_DELIVERY_DSH_TOOLS_DIR) to enable the tools.',
+    )
+  }
+  const safeDefinitions = new Set()
+  const register = (definition) => {
+    if (refused) return
+    if (!schemaIsProviderSafe(definition)) {
+      ctx.logger?.error?.(
+        `delivery-assured: NOT registering ${definition?.name} — its parameter schema is not an object-rooted JSON Schema, which the model provider rejects.`,
+      )
+      return
+    }
+    safeDefinitions.add(definition.name)
+    ctx.tools.register(definition)
+  }
+
   // Resolve per call: a host-wide cache would reuse the first session's project.
   function requireReady(exec = {}) {
     const session = exec.agent?.session
@@ -58,7 +89,7 @@ export function apply(ctx, config = {}) {
     return { ok: true, ctx: ctxInfo }
   }
 
-  ctx.tools.register(
+  register(
     defineTool({
       name: 'delivery_gaps',
       description:
@@ -98,7 +129,7 @@ export function apply(ctx, config = {}) {
     }),
   )
 
-  ctx.tools.register(
+  register(
     defineTool({
       name: 'delivery_coverage',
       description:
@@ -135,7 +166,7 @@ export function apply(ctx, config = {}) {
     }),
   )
 
-  ctx.tools.register(
+  register(
     defineTool({
       name: 'delivery_resume',
       description:
@@ -163,7 +194,7 @@ export function apply(ctx, config = {}) {
     }),
   )
 
-  ctx.tools.register(
+  register(
     defineTool({
       name: 'delivery_attempts',
       description:
@@ -188,7 +219,7 @@ export function apply(ctx, config = {}) {
     }),
   )
 
-  ctx.tools.register(
+  register(
     defineTool({
       name: 'delivery_verify_local',
       description:
@@ -242,17 +273,93 @@ export function apply(ctx, config = {}) {
     }
   }
 
+  // ------------------------------------------------------------------ steering
+  // Two controls that keep a working session from drifting off the boundary:
+  // a protected-path guard (refuses, never grants) and an always-on kernel section
+  // rendered from the pack's own resume output. Both are optional services: a host
+  // without them still gets the read-only tools, and nothing here fails the load.
+  const resolveContext = (cwd) => buildContext(config, cwd)
+  const guardInstalled = installGuard(ctx, { config, workspace })
+  const kernelInstalled = installKernel(ctx, { config, workspace, resolveContext })
+
   // A session must be able to see what it resolved, because a wrong pack or project
   // path otherwise looks like a Contract full of gaps. Resolution is per call, so
   // this only reports the launch-time defaults.
   ctx.logger?.info?.(
-    `delivery-assured ready: pack=${resolvePackRoot(config) || '(not found)'} project=${resolveProjectRoot(config, workspace).root} defineTool=${defineToolSource}`,
+    `delivery-assured ready: pack=${resolvePackRoot(config) || '(not found)'} project=${resolveProjectRoot(config, workspace).root} ` +
+      `defineTool=${defineToolSource} verdict=${defineToolVerdict} tools=${safeDefinitions.size} guard=${guardInstalled} kernel=${kernelInstalled}`,
   )
   if (defineToolIsPassThrough) {
-    ctx.logger?.warn?.(
-      'delivery-assured: the runtime defineTool was not found, so tool schemas were not projected by DSH. ' +
-        'Registering tools this way still works, but it means the runtime contract was not verified at load time.',
+    ctx.logger?.error?.(
+      'delivery-assured: the runtime defineTool was NOT found, so no tool schema could be projected by DSH and no tool was registered. ' +
+        'Point DSH_DELIVERY_DSH_TOOLS_DIR at the hosting runtime, or install the plugin into the profile that hosts it.',
     )
+  }
+}
+
+/**
+ * Register the protected-path guard. `ctx.tools.guard()` is a synchronous denial
+ * check whose verdict cannot be overturned by a later listener, so a wrong verdict
+ * here would be permanent; every branch therefore fails closed only for writes whose
+ * target is inside the protected standard, and allows everything else.
+ */
+function installGuard(ctx, { config, workspace }) {
+  if (!ctx.tools || typeof ctx.tools.guard !== 'function') return 'unavailable'
+  try {
+    const repoRoot = config.repoRoot || null
+    const guard = buildGuard({
+      workspace,
+      repoRoot,
+      // A repository that is itself the operation pack under development sets this
+      // to false: otherwise the guard refuses the very edits that improve the pack.
+      protectRepoMaterial: config.protectRepoMaterial !== false,
+      resolveProject: (cwd) => {
+        const found = resolveProjectRoot(config, cwd)
+        // Only a project that really carries a Contract is worth protecting; a
+        // session in an unrelated directory must not inherit another repository's
+        // protected paths.
+        return found.source.endsWith('missing_contract') ? null : found.root
+      },
+    })
+    ctx.tools.guard(guard)
+    return 'installed'
+  } catch (error) {
+    ctx.logger?.warn?.(`delivery-assured: could not install the protected-path guard: ${error?.message || error}`)
+    return 'failed'
+  }
+}
+
+/**
+ * Publish the Global Kernel as a system-prompt variable plus the section that
+ * references it. The provider is synchronous by contract, so the text is served from
+ * a cache that a background refresh fills from `resume.mjs`.
+ */
+function installKernel(ctx, { config, workspace, resolveContext }) {
+  // `ctx.get` is the service lookup on a composed host; a host that exposes the
+  // service directly (or a test double) must work too, so try both instead of
+  // letting an absent lookup shadow a present service.
+  const looked = typeof ctx.get === 'function' ? ctx.get('systemPrompt') : null
+  const systemPrompt = looked || ctx.systemPrompt
+  if (!systemPrompt || typeof systemPrompt.variable !== 'function' || typeof systemPrompt.section !== 'function') {
+    return 'unavailable'
+  }
+  try {
+    const kernel = createKernel({ resolveContext, logger: ctx.logger })
+    systemPrompt.variable(kernel.variable, () => kernel.text())
+    systemPrompt.section({ name: kernel.section, order: kernel.order, text: `{{${kernel.variable}}}` })
+    // Fill the cache now so the first request after a session starts already carries
+    // the kernel; the call is deliberately not awaited, and the provider says "not
+    // ready" rather than inventing a summary if it has not finished.
+    const shell = ctx.shell
+    const session = typeof ctx.get === 'function' ? ctx.get('session') : undefined
+    const cwd = session?.header?.cwd || workspace
+    Promise.resolve()
+      .then(() => kernel.refresh(shell, cwd))
+      .catch(() => {})
+    return 'installed'
+  } catch (error) {
+    ctx.logger?.warn?.(`delivery-assured: could not publish the delivery kernel: ${error?.message || error}`)
+    return 'failed'
   }
 }
 

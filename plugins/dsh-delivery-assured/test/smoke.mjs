@@ -118,24 +118,36 @@ check('check-gaps reports the contract phase', gaps.json?.phase === 'contract', 
 check('check-gaps reads a real Contract', (gaps.json?.counts?.obligations ?? 0) > 0, JSON.stringify(gaps.json?.counts))
 
 // -------------------------------------------------------------- tool registration
+// Whether tools may be registered at all is a safety decision, not a detail: a
+// definition the host cannot project kills the session at the next model request.
+// This suite therefore asserts both branches of that decision instead of assuming it.
+const defineToolModule = await import(new URL('../lib/define-tool.js', import.meta.url).href)
+const verdict = defineToolModule.defineToolVerdict
+const loggedErrors = []
 const registered = []
 const ctx = {
   tools: { register: (tool) => registered.push(tool) },
   shell: shellStub,
   skills: { register: (skill) => registered.push({ __skill: skill }) },
   effect: () => () => {},
-  logger: { info: () => {}, warn: () => {} },
+  logger: { info: () => {}, warn: () => {}, error: (message) => loggedErrors.push(String(message)) },
 }
 entry.apply(ctx, config)
 
 const tools = registered.filter((r) => !r.__skill)
 const skills = registered.filter((r) => r.__skill)
 const toolNames = tools.map((t) => t.name)
-check(
-  'registers exactly the five read-only tools',
-  toolNames.length === 5 && ['delivery_gaps', 'delivery_coverage', 'delivery_resume', 'delivery_attempts', 'delivery_verify_local'].every((n) => toolNames.includes(n)),
-  toolNames.join(', '),
-)
+check('the helper verdict is one of the two documented outcomes', ['ok', 'refuse'].includes(verdict), `${verdict} (${defineToolModule.defineToolSource})`)
+if (verdict === 'ok') {
+  check(
+    'registers exactly the five read-only tools',
+    toolNames.length === 5 && ['delivery_gaps', 'delivery_coverage', 'delivery_resume', 'delivery_attempts', 'delivery_verify_local'].every((n) => toolNames.includes(n)),
+    toolNames.join(', '),
+  )
+} else {
+  check('a refused helper registers no tools at all', toolNames.length === 0, toolNames.join(', '))
+  check('and the refusal is explained', loggedErrors.some((m) => /NOT registering tools/.test(m)), loggedErrors.join(' | ').slice(0, 200))
+}
 check('registers the runtime skill', skills.length === 1 && skills[0].__skill.name === 'delivery-assured', JSON.stringify(skills.map((s) => s.__skill?.name)))
 check(
   'the runtime skill carries a loadable body',
@@ -153,27 +165,171 @@ check(
   toolNames.join(', '),
 )
 
-// Every tool schema must be well formed, because a bad schema fails at call time.
+// Every tool schema must be well formed, because a bad schema fails at call time —
+// and the provider receives `tool.parameters` verbatim.
 for (const tool of tools) {
   check(`tool ${tool.name} has a description`, typeof tool.description === 'string' && tool.description.length > 40)
   check(`tool ${tool.name} has an executor`, typeof tool.execute === 'function')
   check(`tool ${tool.name} declares output`, Boolean(tool.output))
+  check(`tool ${tool.name} is provider-safe`, defineToolModule.schemaIsProviderSafe(tool), JSON.stringify(tool.parameters).slice(0, 120))
   check(
     `tool ${tool.name} states the authority boundary`,
     /read-only|diagnostic/i.test(tool.description) && /CI/i.test(tool.description),
   )
 }
 
-// A tool must not run when the pack or project cannot be resolved.
-const brokenRegistered = []
-entry.apply(
-  { tools: { register: (t) => brokenRegistered.push(t) }, shell: shellStub, effect: () => () => {}, logger: {} },
-  { packRoot: join(tmpdir(), 'does-not-exist'), projectRoot: join(tmpdir(), 'does-not-exist'), nodeBin: node?.bin },
+// A tool must not run when the pack or project cannot be resolved. This needs a
+// registered tool, so it is only meaningful where the host helper was accepted; the
+// same behaviour is asserted under the desktop host in host-resolution.test.mjs.
+if (tools.length === 0) {
+  process.stdout.write(
+    `note: the host helper is not usable in this process (${defineToolModule.defineToolSource}), so tool behaviour is asserted by host-resolution.test.mjs instead\n`,
+  )
+} else {
+  const brokenRegistered = []
+  entry.apply(
+    { tools: { register: (t) => brokenRegistered.push(t) }, shell: shellStub, effect: () => () => {}, logger: {} },
+    { packRoot: join(tmpdir(), 'does-not-exist'), projectRoot: join(tmpdir(), 'does-not-exist'), nodeBin: node?.bin },
+  )
+  const gapsTool = brokenRegistered.find((t) => t.name === 'delivery_gaps')
+  const brokenAnswer = gapsTool ? await gapsTool.execute({ phase: 'contract' }) : null
+  check('a broken configuration produces a diagnostic instead of throwing', brokenAnswer?.ok === false, JSON.stringify(brokenAnswer)?.slice(0, 200))
+  check('the diagnostic explains what to configure', Array.isArray(brokenAnswer?.problems) && brokenAnswer.problems.length > 0)
+}
+
+// The exact condition that once killed a live DSH session: no resolvable host helper,
+// so the pass-through would have handed the provider an uncompiled parameter spec.
+// Nothing may be registered in that condition, in any environment.
+const poisonProbe = `
+const registered = []
+const errors = []
+const ctx = { tools: { register: (t) => registered.push(t.name) }, skills: { register: () => {} }, effect: () => () => {}, logger: { info: () => {}, warn: () => {}, error: (m) => errors.push(String(m)) } }
+const entry = await import(${JSON.stringify(new URL('../lib/index.js', import.meta.url).href)})
+entry.apply(ctx, { packRoot: ${JSON.stringify(packRoot)}, projectRoot: ${JSON.stringify(projectRoot)} })
+const dt = await import(${JSON.stringify(new URL('../lib/define-tool.js', import.meta.url).href)})
+process.stdout.write(JSON.stringify({ verdict: dt.defineToolVerdict, source: dt.defineToolSource, tools: registered, errors: errors.length }))
+`
+const emptyHome = mkdtempSync(join(tmpdir(), 'da-empty-home-'))
+try {
+  const child = execFileSync(process.execPath, ['--input-type=module', '-e', poisonProbe], {
+    encoding: 'utf8',
+    env: { ...process.env, DSH_HOME: emptyHome, DSH_PROFILE_DIR: '', DSH_DELIVERY_DSH_TOOLS_DIR: '' },
+  })
+  const result = JSON.parse(child)
+  check('an unresolvable host helper yields the refuse verdict', result.verdict === 'refuse', JSON.stringify(result).slice(0, 200))
+  check('and no tool is registered in that condition', Array.isArray(result.tools) && result.tools.length === 0, JSON.stringify(result.tools))
+  check('and the refusal is logged', result.errors > 0, String(result.errors))
+} catch (error) {
+  check('the poisoning-condition probe ran', false, String(error.message).slice(0, 200))
+} finally {
+  rmSync(emptyHome, { recursive: true, force: true })
+}
+
+// ------------------------------------- steering: protected paths + global kernel
+const guardCalls = []
+const promptVars = new Map()
+const promptSections = []
+const steeringCtx = {
+  tools: { register: () => {}, guard: (g) => guardCalls.push(g) },
+  shell: shellStub,
+  skills: { register: () => {} },
+  systemPrompt: {
+    variable: (n, p) => { promptVars.set(n, p); return () => {} },
+    section: (s) => { promptSections.push(s); return () => {} },
+  },
+  get: () => undefined,
+  effect: () => () => {},
+  logger: { info: () => {}, warn: () => {} },
+}
+entry.apply(steeringCtx, config)
+
+check('registers exactly one protected-path guard', guardCalls.length === 1, `guards=${guardCalls.length}`)
+const guard = guardCalls[0]
+const denyReason = (exec) => guard(exec)
+check(
+  'denies writing the Contract',
+  typeof denyReason({ name: 'write', arguments: { file_path: join(projectRoot, '.agent', 'CONTRACT.yaml'), content: 'x' } }) === 'string',
 )
-const gapsTool = brokenRegistered.find((t) => t.name === 'delivery_gaps')
-const brokenAnswer = gapsTool ? await gapsTool.execute({ phase: 'contract' }) : null
-check('a broken configuration produces a diagnostic instead of throwing', brokenAnswer?.ok === false, JSON.stringify(brokenAnswer)?.slice(0, 200))
-check('the diagnostic explains what to configure', Array.isArray(brokenAnswer?.problems) && brokenAnswer.problems.length > 0)
+check(
+  'denies editing the protected acceptance spec',
+  typeof denyReason({ name: 'edit', arguments: { file_path: join(projectRoot, 'tests', 'acceptance', 'spec', 'cli.spec.mjs') } }) === 'string',
+)
+check(
+  'denies rewriting the verifier configuration',
+  typeof denyReason({ name: 'write', arguments: { file_path: join(projectRoot, 'ci', 'verifier.yaml') } }) === 'string',
+)
+check(
+  'denies rewriting the operation pack the verifier runs',
+  typeof denyReason({ name: 'write', arguments: { file_path: join(repoRoot, 'packages', 'delivery-assured', 'scripts', 'coverage.mjs') } }) === 'string',
+)
+// The pack's own repository is the one case where that layer must be switchable:
+// otherwise improving the pack would be refused as a Candidate edit.
+const selfHosting = []
+entry.apply(
+  { tools: { register: () => {}, guard: (g) => selfHosting.push(g) }, shell: shellStub, effect: () => () => {}, get: () => undefined, logger: {} },
+  { ...config, protectRepoMaterial: false },
+)
+check(
+  'a self-hosting project can switch off the repository-material layer',
+  selfHosting.length === 1 &&
+    selfHosting[0]({ name: 'write', arguments: { file_path: join(repoRoot, 'packages', 'delivery-assured', 'scripts', 'coverage.mjs') } }) === undefined &&
+    typeof selfHosting[0]({ name: 'write', arguments: { file_path: join(projectRoot, '.agent', 'CONTRACT.yaml') } }) === 'string',
+  `guards=${selfHosting.length}`,
+)
+check(
+  'denies a shell command that moves an authority ref',
+  typeof denyReason({ name: 'pwsh', arguments: { command: 'git push origin HEAD:refs/heads/baseline/main' } }) === 'string',
+)
+check(
+  'denies a write whose target cannot be resolved (fail closed)',
+  typeof denyReason({ name: 'write', arguments: { content: 'x' } }) === 'string',
+)
+check(
+  'allows the Candidate driver surface',
+  denyReason({ name: 'write', arguments: { file_path: join(projectRoot, 'tests', 'acceptance', 'driver', 'index.mjs'), content: 'x' } }) === undefined,
+)
+check(
+  'never blocks read-only tools',
+  denyReason({ name: 'read', arguments: { file_path: join(projectRoot, '.agent', 'CONTRACT.yaml') } }) === undefined,
+)
+check(
+  'allows an ordinary diagnostic command',
+  denyReason({ name: 'pwsh', arguments: { command: 'node packages/delivery-assured/scripts/coverage.mjs --view mvp' } }) === undefined,
+)
+
+check('publishes the delivery kernel variable', promptVars.has('delivery_kernel'), [...promptVars.keys()].join(', '))
+check(
+  'publishes the kernel as a prompt section that references the variable',
+  promptSections.some((s) => s.name === 'delivery-assured:kernel' && String(s.text).includes('{{delivery_kernel}}')),
+  JSON.stringify(promptSections.map((s) => s.name)),
+)
+
+const kernelModule = await import(new URL('../lib/kernel.js', import.meta.url).href)
+const kernel = kernelModule.createKernel({ resolveContext: (cwd) => bridge.buildContext(config, cwd) })
+await kernel.refresh(shellStub, projectRoot)
+const kernelText = kernel.text()
+check('the kernel names the project it inspected', kernelText.includes(resolve(projectRoot)), kernelText.slice(0, 160))
+check('the kernel states the trust boundary', /不是完成凭证/.test(kernelText) && /受保护标准/.test(kernelText))
+check('the kernel reports what is still owed and the budget', /还欠:/.test(kernelText) && /预算:/.test(kernelText))
+check('the kernel names the protected paths a session must not write', /CONTRACT\.yaml/.test(kernelText) && /acceptance\/spec/.test(kernelText))
+const fixtureKernel = kernelModule.renderKernel({
+  project: 'P:/demo',
+  candidate: 'a'.repeat(40),
+  dirty: [1, 2],
+  current_slice: 'S1',
+  local_baseline: { baseline_id: 'BL-000' },
+  evidence: { total: 2, issuer_match: 1, independently_attested: 0 },
+  owed: { pending_implementation: ['X'] },
+  budget: { counted: 1, limits: { total_attempt_limit: 8, replan_limit: 2 }, history_known: true, critical_open: ['R'] },
+  blockers: ['b1'],
+  next_actions: ['do next'],
+})
+check(
+  'a fixture renders deterministically, including uncertainty about origin',
+  fixtureKernel.includes('BL-000') && fixtureKernel.includes('do next') && fixtureKernel.includes('+2 未提交') && fixtureKernel.includes('无法确认来源'),
+  fixtureKernel.slice(0, 200),
+)
+check('an unresolvable project says so instead of inventing a summary', /未找到可检查的交付项目/.test(kernelModule.renderKernel({})))
 
 // ------------------------------------------------- invocation through the package
 // Run the suite once more from a copied package directory, to prove the plugin
@@ -216,17 +372,31 @@ if (process.env.DSH_DA_SMOKE_CHILD === '1') {
     cpSync(pluginRoot, orphanRoot, { recursive: true })
     const orphan = await import(new URL(`file://${join(orphanRoot, 'lib', 'index.js').replace(/\\/g, '/')}`).href)
     const orphanTools = []
+    const orphanErrors = []
     orphan.apply(
-      { tools: { register: (t) => orphanTools.push(t) }, shell: shellStub, effect: () => () => {}, logger: {} },
+      {
+        tools: { register: (t) => orphanTools.push(t) },
+        shell: shellStub,
+        effect: () => () => {},
+        logger: { error: (m) => orphanErrors.push(String(m)) },
+      },
       { packRoot: join(orphanRoot, 'nope'), projectRoot: join(orphanRoot, 'nope') },
     )
-    const answer = await orphanTools.find((t) => t.name === 'delivery_resume').execute({})
-    check('an unresolvable pack is reported as a diagnostic', answer?.ok === false, JSON.stringify(answer)?.slice(0, 200))
-    check(
-      'the diagnostic names the pack as the missing piece',
-      (answer?.problems || []).some((p) => /operation pack/i.test(p)),
-      JSON.stringify(answer?.problems),
-    )
+    const orphanResume = orphanTools.find((t) => t.name === 'delivery_resume')
+    if (orphanResume) {
+      const answer = await orphanResume.execute({})
+      check('an unresolvable pack is reported as a diagnostic', answer?.ok === false, JSON.stringify(answer)?.slice(0, 200))
+      check(
+        'the diagnostic names the pack as the missing piece',
+        (answer?.problems || []).some((p) => /operation pack/i.test(p)),
+        JSON.stringify(answer?.problems),
+      )
+    } else {
+      // The helper was not the host's own, so no tool exists to ask; withholding
+      // everything is the contract, and the reason must still be visible.
+      check('an unusable helper withholds every tool instead of throwing at import', orphanTools.length === 0)
+      check('and says why it withheld them', orphanErrors.some((m) => /NOT registering tools/.test(m)), orphanErrors.join(' | ').slice(0, 200))
+    }
   } catch (error) {
     check('an unresolvable pack is reported as a diagnostic', false, String(error.message).slice(0, 200))
   } finally {

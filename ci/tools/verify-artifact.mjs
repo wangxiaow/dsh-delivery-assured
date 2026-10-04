@@ -22,7 +22,7 @@
  */
 
 import { createHash } from 'node:crypto'
-import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs'
 import { execFileSync } from 'node:child_process'
 import { dirname, join, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -36,6 +36,7 @@ function parse(argv) {
     if (token === '--project') opts.project = argv[++i]
     else if (token === '--out') opts.out = argv[++i]
     else if (token === '--quiet') opts.quiet = true
+    else if (token === '--check') opts.check = true
     else if (token === '--help') opts.help = true
     else {
       process.stderr.write(`verify-artifact: unknown option ${token}\n`)
@@ -91,11 +92,14 @@ function main() {
 
   // The shipped set is the CLI plus the operation pack it imports. Anything the
   // bundle needs to run must be inside it, or the digest would not cover the artifact.
+  // Preserve import-relative repository paths; cli/ + pack/ was not runnable.
   const sources = [
-    { label: 'cli', dir: join(root, 'src') },
-    { label: 'gates', dir: join(root, 'scripts') },
-    { label: 'pack', dir: resolve(root, '..', 'packages', 'delivery-assured', 'scripts') },
-  ].filter((entry) => existsSync(entry.dir))
+    { label: 'project/src', dir: join(root, 'src') },
+    { label: 'project/scripts', dir: join(root, 'scripts') },
+    { label: 'project/tests', dir: join(root, 'tests') },
+    { label: 'packages/delivery-assured', dir: resolve(root, '..', 'packages', 'delivery-assured') },
+  ]
+  if (sources.some(entry => !existsSync(entry.dir))) throw new Error('a required artifact source is missing')
 
   if (sources.length === 0) {
     process.stderr.write('verify-artifact: no shippable source directory was found\n')
@@ -103,7 +107,22 @@ function main() {
   }
 
   const outDir = resolve(opts.out || join(root, '.agent', 'artifact', 'delivery-assured'))
-  rmSync(outDir, { recursive: true, force: true })
+  if (opts.check) {
+    const saved = JSON.parse(readFileSync(join(outDir, 'ARTIFACT.json'), 'utf8'))
+    const entries = []
+    for (const source of sources) for (const name of listFiles(source.dir)) {
+      const bytes = readFileSync(join(source.dir, name))
+      entries.push({ path: `${source.label}/${name}`, bytes: bytes.length, sha256: createHash('sha256').update(bytes).digest('hex') })
+    }
+    const actual = listFiles(outDir).filter((name) => !['ARTIFACT.json', 'MANIFEST.tsv'].includes(name))
+    if (saved.code_revision !== codeRevision || JSON.stringify(entries) !== JSON.stringify(saved.entries) || actual.length !== saved.entries.length) throw new Error('artifact source or file set changed after verification')
+    const text = `${saved.entries.map((e) => `${e.path}\t${e.bytes}\t${e.sha256}`).join('\n')}\n`
+    if (readFileSync(join(outDir, 'MANIFEST.tsv'), 'utf8') !== text || createHash('sha256').update(text).digest('hex') !== saved.digest) throw new Error('artifact manifest changed')
+    for (const entry of saved.entries) if (createHash('sha256').update(readFileSync(join(outDir, entry.path))).digest('hex') !== entry.sha256) throw new Error(`artifact bytes changed: ${entry.path}`)
+    process.stdout.write('artifact unchanged\n')
+    return 0
+  }
+  if (existsSync(outDir)) throw new Error('artifact already exists; refusing to rebuild verified bytes')
 
   const manifest = []
   for (const source of sources) {
@@ -128,14 +147,9 @@ function main() {
     'utf8',
   )
 
-  // A deployment identity has to be something a third party could look at. The run
-  // id is the only stable, externally visible label this job has.
-  const deploymentId = process.env.DSH_CI_RUN_ID ? `cli-run-${process.env.DSH_CI_RUN_ID}` : `cli-local-${Date.now()}`
-
-  process.stdout.write(`DSH_DEPLOYMENT_ID=${deploymentId}\n`)
-  process.stdout.write(`DSH_DEPLOYED_CODE_REVISION=${codeRevision}\n`)
+  // Packaging is not a deployment observation. An external runtime must report
+  // DSH_DEPLOYMENT_ID and DSH_DEPLOYED_* after actually starting this artifact.
   process.stdout.write(`DSH_IMAGE_DIGEST=sha256:${digest}\n`)
-  process.stdout.write(`DSH_DEPLOYED_IMAGE_DIGEST=sha256:${digest}\n`)
   process.stdout.write(`DSH_ARTIFACT_DIR=${relative(root, outDir).split('\\').join('/')}\n`)
 
   if (!opts.quiet) {
