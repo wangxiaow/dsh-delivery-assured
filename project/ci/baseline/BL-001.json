@@ -1,0 +1,55 @@
+{
+  "baseline_id": "BL-001",
+  "protected_ref": "refs/heads/baseline/main",
+  "code_revision": "038cb0ae1e6b38a71e5af28a2668ecc98491af7f",
+  "parent_baseline": "BL-000",
+  "contract_revision": "b4e127ec9ada91aac3a4d7f26ed7190f154bf32a",
+  "acceptance_revision": "b4e127ec9ada91aac3a4d7f26ed7190f154bf32a",
+  "verifier_config_revision": "038cb0ae1e6b38a71e5af28a2668ecc98491af7f",
+  "verification_scope": {
+    "machine_verified_outcomes": [
+      "BR-EVIDENCE-NOT-LOCAL",
+      "BR-STATUS-DERIVED",
+      "C-BOOTSTRAP",
+      "C-STATUS-COMPUTATION",
+      "J-CI-AUTHORITY",
+      "J-CI-AUTHORITY.blocked_without_ci",
+      "J-CI-AUTHORITY.local_only",
+      "J-DELIVERY-STATUS.rejected"
+    ],
+    "remaining_outcomes": [
+      "C-INPUT-DIAGNOSTICS",
+      "J-DELIVERY-STATUS",
+      "J-DELIVERY-STATUS.ready"
+    ],
+    "manual_reviews_pending": [
+      "R-CORE-JOURNEYS"
+    ],
+    "spine_manifest_digest": "033b51eafe76a7d342f0bcedffe2383fc84a567e235660694f2473944e084055"
+  },
+  "environment": {
+    "validated_in": "production_like_ci",
+    "image_digest": "sha256:2006ca300588661d4a564c7da912d92d93f85f3c1a22ed844fd0e02f6d2b09fa",
+    "migration_digest": null,
+    "staging_deployment_id": null
+  },
+  "evidence_refs": [
+    "ci:verify:37180552926-1"
+  ],
+  "promotion_run_id": "37181131525-1",
+  "runtime_isolation": {
+    "verified": false,
+    "note": "candidate runtime isolation is not implemented or attested; recorded as a warning, not a promotion gate"
+  },
+  "accumulated_spine_case_ids": [
+    "A-BOOTSTRAP-CLEAN-BOOT",
+    "A-CLI-BLOCKED-WITHOUT-CI",
+    "A-CLI-CRITICAL-NOT-LOCAL-PASS",
+    "A-CLI-DOES-NOT-WRITE",
+    "A-CLI-INPUT-REJECTED",
+    "A-CLI-STALE-EVIDENCE",
+    "A-CLI-STATE-DONE-NOT-COMPLETION",
+    "A-CLI-STATUS-JSON"
+  ],
+  "accumulated_spine_manifest_digest": "1982e6a47532a94b0a6b4987282742c051e32bc687a22dc821b7ddf0b62a69b2"
+}
