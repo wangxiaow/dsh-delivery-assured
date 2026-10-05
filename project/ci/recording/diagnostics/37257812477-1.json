@@ -1,0 +1,20 @@
+{
+  "run_key": "37257812477-1",
+  "status": "blocked",
+  "errors": [
+    "invalid attempt history: [{\"line\":0,\"message\":\"comparison rebase DEC-8-ENVIRONMENT is missing approval or mismatches the frozen sets\"}]"
+  ],
+  "receipt": {
+    "repository": "wangxiaow/dsh-delivery-assured",
+    "run_id": 37257812477,
+    "run_attempt": 1,
+    "run_key": "37257812477-1",
+    "verifier_revision": "efac056445f0c73f3dcd634082e3a518bd0e3315",
+    "conclusion": "success",
+    "path": ".github/workflows/verify.yml",
+    "event": "workflow_dispatch",
+    "head_branch": "main",
+    "content_digest": "2ea47cdbcdff4134962147be026ba841e0b0040bceba4ff36cffa02f51391c1f"
+  },
+  "derived_attempt": false
+}
