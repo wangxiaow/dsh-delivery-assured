@@ -31,3 +31,10 @@ ci:
   verify_workflow: .github/workflows/verify.yml
   promote_workflow: .github/workflows/promote.yml
   trusted_issuer: ci:verify
+
+# This repository is the operation pack's own target, and its frozen Contract states
+# BR-EVIDENCE-NOT-LOCAL: only the trusted CI verifier produces Evidence here. That is an
+# explicit choice of the high-assurance backend, not the ordinary default — a project that
+# declares nothing is completed by the host-executed verifier (see docs/AUTO_DELIVERY.md).
+verification:
+  backend: trusted_ci

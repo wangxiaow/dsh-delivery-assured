@@ -13,11 +13,12 @@
  * Exit codes: 0 nothing blocking for the requested view, 1 blocking gap, 2 input error.
  */
 
-import { EXIT, InputError, abs, findProjectRoot, finish, gitRevision, parseArgs, rel } from './lib/common.mjs'
+import { EXIT, InputError, abs, findProjectRoot, finish, parseArgs, rel, worktreeRevision } from './lib/common.mjs'
 import { blockingForView, collectCriticalViolations, coverageRows } from './lib/coverage-core.mjs'
-import { loadModel, scanDriverForAssertions, specDiffAgainstProtected } from './lib/model.mjs'
+import { scanDriverForAssertions, specDiffAgainstProtected } from './lib/model.mjs'
 import { scopeForSlice } from './lib/selection.mjs'
-import { fetchDurableState } from './lib/durable-state.mjs'
+import { STATE_SOURCE, openStateView } from './lib/state-view.mjs'
+import { resolveVerification } from './lib/verification.mjs'
 
 function main() {
   const opts = parseArgs(process.argv.slice(2), {
@@ -29,30 +30,38 @@ function main() {
     quiet: 'boolean',
     all: 'boolean',
     'durable-state': 'boolean',
+    'state-transport': 'value',
+    'state-repo': 'value',
   })
   if (opts.help) {
     process.stdout.write('coverage — recomputed obligation coverage (--view slice|mvp)\n')
     process.stdout.write('  --durable-state  also read refs/heads/delivery-state/main (Baseline, Evidence, Spine)\n')
+    process.stdout.write('  --state-transport <how>  auto (default; gh first), gh (GitHub API), git (ls-remote + fetch)\n')
     return EXIT.PASS
   }
   const view = opts.view || 'slice'
   if (!['slice', 'mvp'].includes(view)) throw new InputError(`--view must be slice or mvp (got ${view})`)
+  const transport = opts['state-transport'] || 'auto'
+  if (!['auto', 'gh', 'git'].includes(transport)) throw new InputError(`--state-transport must be one of auto, gh, git (got ${transport})`)
 
   const root = findProjectRoot(opts.project)
   // The Baseline, Evidence and accumulated Spine live on the durable-state ref. Without
   // reading it a session sees only the working tree and reports delivered work as stale.
-  const durable = opts['durable-state']
-    ? fetchDurableState({ repoRoot: root, fallbackRoot: root })
-    : { available: false, sha: null, root: null, reason: null, dispose() {} }
-  let model
-  try {
-    model = loadModel(root, { stateRoot: durable.available ? durable.root : null })
-  } catch (error) {
-    durable.dispose?.()
-    throw error
-  }
-  const candidate = opts.candidate || gitRevision(root, 'HEAD')
+  // The shared view names the source once, so this reader and `resume` cannot disagree.
+  const stateView = openStateView(root, {
+    source: opts['durable-state'] ? STATE_SOURCE.DURABLE_REF : STATE_SOURCE.WORKTREE,
+    repoRoot: root,
+    fallbackRoot: root,
+    transport,
+    repo: opts['state-repo'] || null,
+  })
+  const durable = stateView.durable
+  const authority = stateView.authority
+  const model = stateView.model
+  const candidateSource = worktreeRevision(root, 'HEAD')
+  const candidate = opts.candidate || candidateSource.revision
   const trustedIssuer = model.cfg.ci?.trusted_issuer || null
+  const acceptedIssuers = (stateView.verification || resolveVerification(model.cfg)).acceptedIssuers
   const localBaseline = model.baselines.length > 0 ? model.baselines[model.baselines.length - 1] : null
   const parentBaseline = localBaseline?.baseline_id || null
 
@@ -60,6 +69,7 @@ function main() {
     candidate,
     parentBaseline,
     trustedIssuer,
+    acceptedIssuers,
     includeOptional: opts.all === true,
   })
 
@@ -71,14 +81,30 @@ function main() {
   const caseIds = selected?.caseIds || null
   const scope = new Set(selected?.obligationIds || [])
   const scopedBuckets = view === 'slice' ? Object.fromEntries(Object.entries(buckets).map(([name, ids]) => [name, ids.filter(id => scope.has(id))])) : buckets
-  const criticalViolations = collectCriticalViolations(model, { codeRevision: candidate, parentBaseline, trustedIssuer, requiredCaseIds: caseIds, obligationIds: [...scope] })
+  const criticalViolations = collectCriticalViolations(model, { codeRevision: candidate, parentBaseline, trustedIssuer, acceptedIssuers, requiredCaseIds: caseIds, obligationIds: [...scope] })
   const blocking = blockingForView(scopedBuckets, view)
-  const code = blocking.length > 0 || criticalViolations.length > 0 || specDiff.diffs.length > 0 || driverFindings.length > 0
+  // Coverage computed from the working tree while the platform's state was requested is a
+  // different answer about a different history, so it fails and names the failed channel.
+  // A repository that simply has no durable-state ref (the host-executed default) is not a
+  // degraded read: the view reports `worktree-no-durable-state-ref` and is not degraded.
+  const degraded = opts['durable-state'] === true && authority.degraded
+  const code = degraded || blocking.length > 0 || criticalViolations.length > 0 || specDiff.diffs.length > 0 || driverFindings.length > 0
     ? EXIT.FAIL
     : EXIT.PASS
 
   const human = []
   human.push(`view: ${view}   candidate: ${candidate ? candidate.slice(0, 12) : '(no git revision)'}   parent baseline: ${parentBaseline || '(none)'}`)
+  human.push(
+    `state source: ${authority.kind}${authority.transport ? ` (${authority.transport})` : ''}` +
+      `${
+        !opts['durable-state']
+          ? ' — the working tree only; pass --durable-state for the Baseline, Evidence and Spine the platform holds'
+          : durable.available
+            ? ` — ${String(durable.sha).slice(0, 12)} on ${durable.branch}, read-only`
+            : ` — unavailable: ${durable.reason}`
+      }`,
+  )
+  if (degraded) human.push(`BLOCK ${authority.reason}`)
   human.push('')
   human.push('obligation                        kind       slice(s)      acceptance                  status')
   human.push('-'.repeat(118))
@@ -146,8 +172,17 @@ function main() {
         requested: opts['durable-state'] === true,
         available: durable.available === true,
         sha: durable.sha || null,
+        transport: durable.transport || null,
+        transport_requested: transport,
+        worktree_filled: authority.worktree_filled,
+        attempted: authority.attempted,
         reason: durable.reason || null,
       },
+      state_authority: authority.kind,
+      state_authoritative: authority.authoritative,
+      state_degraded: authority.degraded,
+      state_degraded_reason: authority.reason,
+      candidate_source: candidateSource.source,
       rows,
       buckets,
       gap_classes: gapClasses,
@@ -159,7 +194,7 @@ function main() {
     color: !opts.quiet,
     jsonRequested: opts.json === true,
   })
-  durable.dispose?.()
+  stateView.dispose()
   return outcome
 }
 

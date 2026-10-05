@@ -7,12 +7,14 @@
  *   - `.agent/STATE.yaml` is a hint, never evidence
  */
 
-import { readFileSync, existsSync, readdirSync, statSync } from 'node:fs'
+import { closeSync, existsSync, openSync, readdirSync, readFileSync, statSync, unlinkSync } from 'node:fs'
 import { join, resolve, dirname, isAbsolute, relative } from 'node:path'
 import { createHash } from 'node:crypto'
 import { fileURLToPath } from 'node:url'
-import { execFileSync } from 'node:child_process'
+import { tmpdir } from 'node:os'
+import { spawnSync } from 'node:child_process'
 import { parseYaml, YamlError } from './yaml.mjs'
+import { localRevision, remoteUrl as gitConfigRemoteUrl } from './worktree-git.mjs'
 
 export { parseYaml, YamlError }
 
@@ -132,14 +134,72 @@ export function treeDigest(root, files) {
 
 /* ------------------------------------------------------------------- git */
 
-export function git(root, args, { allowFailure = true } = {}) {
+/**
+ * spawnSync with a capture method that works inside a confined DSH shell.
+ *
+ * On a sandboxed shell a child process may not create anonymous pipes, so a
+ * spawnSync that captures through pipes fails with `EPERM` before the child has
+ * started. A failed pipe capture is retried once with stdout/stderr redirected
+ * into private temporary files — the one area confinement grants (the runner's
+ * per-session temp directory) — and both files are removed afterwards. Unconfined
+ * callers keep the zero-footprint pipe path.
+ *
+ * `spawn` is injectable for tests. The return shape is always
+ * `{ ok, status, error, stdout, stderr }` with decoded string output ('' when absent).
+ */
+export function runCaptured(file, args = [], { cwd = undefined, maxBuffer = 128 * 1024 * 1024, spawn = spawnSync, tempDir = tmpdir(), timeoutMs = 0 } = {}) {
+  // `timeoutMs: 0` means "no timeout", which is spawnSync's own default; a caller that
+  // talks to a network (the `gh` transport) passes a real bound so one hung request
+  // cannot hold a session tool open forever.
+  const limits = timeoutMs > 0 ? { timeout: timeoutMs } : {}
+  const first = spawn(file, args, { cwd, shell: false, encoding: 'utf8', maxBuffer, stdio: ['ignore', 'pipe', 'pipe'], ...limits })
+  const settle = (result) => ({
+    ok: !result.error && result.status === 0,
+    status: result.status,
+    error: result.error || null,
+    stdout: String(result.stdout ?? ''),
+    stderr: String(result.stderr ?? ''),
+  })
+  if (!(first.error && first.error.code === 'EPERM')) return settle(first)
+
+  // Confined: pipes are denied. Retry with the output captured through files.
+  const prefix = join(tempDir, `dsh-gate-${process.pid}-${Date.now()}`)
+  const outPath = `${prefix}-out`
+  const errPath = `${prefix}-err`
+  let fdOut
+  let fdErr
   try {
-    const out = execFileSync('git', args, { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] })
-    return { ok: true, out: out.trim(), err: '' }
-  } catch (error) {
-    if (!allowFailure) throw new InputError(`git ${args.join(' ')} failed: ${error.message}`)
-    return { ok: false, out: (error.stdout || '').trim(), err: (error.stderr || '').trim() || error.message }
+    fdOut = openSync(outPath, 'w')
+    fdErr = openSync(errPath, 'w')
+  } catch (openError) {
+    first.error.note = `and the temporary capture files could not be created either: ${openError.message}`
+    return settle(first)
   }
+  try {
+    const second = spawn(file, args, { cwd, shell: false, maxBuffer, stdio: ['ignore', fdOut, fdErr], ...limits })
+    return {
+      ok: !second.error && second.status === 0,
+      status: second.status,
+      error: second.error || null,
+      stdout: readFileSync(outPath, 'utf8'),
+      stderr: readFileSync(errPath, 'utf8'),
+    }
+  } finally {
+    for (const [fd, path] of [[fdOut, outPath], [fdErr, errPath]]) {
+      try { closeSync(fd) } catch { /* already closed by the child's kernel cleanup */ }
+      try { unlinkSync(path) } catch { /* unlink of an absent file has nothing to lose */ }
+    }
+  }
+}
+
+export function git(root, args, { allowFailure = true } = {}) {
+  const captured = runCaptured('git', args, { cwd: root })
+  if (captured.ok) return { ok: true, out: captured.stdout.trim(), err: '' }
+  if (!allowFailure) {
+    const detail = captured.error ? captured.error.message : `exit code ${captured.status}: ${captured.stderr.trim().split('\n')[0] || ''}`
+    throw new InputError(`git ${args.join(' ')} failed: ${detail}`)
+  }
+  return { ok: false, out: captured.stdout.trim(), err: captured.stderr.trim() || (captured.error ? captured.error.message : '') }
 }
 
 export function gitAvailable(root) {
@@ -149,6 +209,34 @@ export function gitAvailable(root) {
 export function gitRevision(root, ref = 'HEAD') {
   const r = git(root, ['rev-parse', ref])
   return r.ok ? r.out : null
+}
+
+/**
+ * The revision a working-tree ref points at, read through `git` when it can run and
+ * through the Git metadata files when a confined session shell cannot start it.
+ *
+ * The distinction matters because the two failure modes look identical otherwise: with
+ * no revision, Evidence that binds the current candidate is classified stale, so a
+ * delivered project is reported as blocked and the working tree is blamed for it. The
+ * source is returned so a report can say which channel produced the revision instead of
+ * pretending the repository is not a repository.
+ */
+export function worktreeRevision(root, ref = 'HEAD') {
+  const viaGit = gitRevision(root, ref)
+  if (viaGit) return { revision: viaGit, source: 'git' }
+  const viaFiles = localRevision(root, ref)
+  if (viaFiles) {
+    return {
+      revision: viaFiles,
+      source: 'git-files',
+      note: 'git could not be run in this shell, so the revision was read from the Git metadata files',
+    }
+  }
+  return {
+    revision: null,
+    source: 'unavailable',
+    note: 'no revision could be read: git could not be run in this shell and the Git metadata did not resolve the ref',
+  }
 }
 
 export function gitDirty(root) {
@@ -227,6 +315,17 @@ export function loadProjectConfig(root) {
     bootstrapEnvironment: raw.bootstrap_environment || 'staging',
     mvpReadyEnvironment: raw.mvp_ready_environment || 'staging',
     ciProvider: raw.ci_provider || 'github-actions',
+    // Verification policy. `verification.backend` names which execution path may
+    // complete this project; an undeclared value is the ordinary default (the DSH host
+    // runs the frozen verifier itself). The trusted CI workflow, the protected refs and
+    // the Promotion job remain available — they are the high-assurance backend, not a
+    // precondition. See lib/verification.mjs for the resolution rules.
+    verification: {
+      backend: raw.verification && typeof raw.verification === 'object' ? raw.verification.backend ?? null : null,
+      hostIssuer: raw.verification && typeof raw.verification === 'object' ? raw.verification.host_issuer ?? null : null,
+      freeze: raw.verification && typeof raw.verification === 'object' ? raw.verification.freeze ?? null : null,
+      raw: raw.verification && typeof raw.verification === 'object' ? raw.verification : {},
+    },
     paths,
     budget,
     ci: raw.ci || {},
@@ -342,14 +441,21 @@ export function loadState(root, cfg) {
 /* --------------------------------------------------------------- evidence */
 
 /**
- * Load every CI evidence record found locally. Records are authoritative only
- * when produced by the trusted CI job; a local file is treated as `local`.
+ * Load every evidence record found locally.
+ *
+ * A host-executed run retains raw execution artifacts (the gate log, a copy of the
+ * harness result file and a receipt) under `evidenceDir/runs/<run id>/`. Those are
+ * execution records, not evidence records: a receipt names the evidence it belongs to
+ * and would otherwise be loaded as a second record for the same id, without an issuer.
+ * Anything under a `runs/` directory is therefore not evidence.
  */
 export function loadEvidence(root, cfg) {
   const records = []
   const roots = [abs(root, cfg.paths.evidenceDir), join(root, 'ci', 'evidence')]
+  const isRunArtifact = (file) => rel(root, file).split('/').includes('runs')
   for (const dir of roots) {
     for (const file of listFiles(dir, (p) => p.endsWith('.json') && !p.endsWith('baseline.json'))) {
+      if (isRunArtifact(file)) continue
       try {
         const doc = JSON.parse(readFileSync(file, 'utf8'))
         if (doc && typeof doc === 'object' && doc.evidence_id) records.push({ ...doc, __file: rel(root, file) })

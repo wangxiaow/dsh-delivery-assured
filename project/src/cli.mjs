@@ -17,6 +17,7 @@ const USAGE = `delivery — what do I still owe?
 
 Usage:
   delivery status [--project <path>] [--json] [--all] [--durable-state]
+                  [--state-transport <auto|gh|git>] [--state-repo <owner/name>]
 
 Commands:
   status    list every required obligation with its recomputed status and basis
@@ -27,6 +28,11 @@ Options:
   --all              include non-required obligations
   --durable-state    also read refs/heads/delivery-state/main (Baseline, Evidence, Spine);
                      read-only, and the only way to see a promoted Baseline
+  --state-transport  how that ref is read: auto (default; gh first), gh (GitHub API),
+                     git (ls-remote + fetch); an unreadable state fails, it does not
+                     silently fall back to the working tree
+  --state-repo       owner/name of the GitHub repository to read from; defaults to the
+                     URL configured for the remote in the Git config
   -h, --help         show this help
 
 Exit codes: 0 no blocking gap, 1 blocking gap found, 2 input/configuration error.
@@ -36,7 +42,7 @@ and only its Promotion job may advance refs/heads/baseline/*.`
 const COMMANDS = new Set(['status', 'help'])
 
 function parse(argv) {
-  const opts = { command: null, project: null, json: false, all: false, 'durable-state': false }
+  const opts = { command: null, project: null, json: false, all: false, 'durable-state': false, 'state-transport': null, 'state-repo': null }
   const args = [...argv]
   while (args.length > 0) {
     const token = args.shift()
@@ -53,6 +59,26 @@ function parse(argv) {
       opts.project = value
       continue
     }
+    if (token === '--state-transport') {
+      const value = args.shift()
+      if (value === undefined) throw new InputError('--state-transport requires a value')
+      if (!['auto', 'gh', 'git'].includes(value)) throw new InputError(`--state-transport must be one of auto, gh, git (got ${value})`)
+      opts['state-transport'] = value
+      continue
+    }
+    if (token === '--state-repo') {
+      const value = args.shift()
+      if (value === undefined) throw new InputError('--state-repo requires a value')
+      opts['state-repo'] = value
+      continue
+    }
+    if (token.startsWith('--state-transport=')) {
+      const value = token.slice('--state-transport='.length)
+      if (!['auto', 'gh', 'git'].includes(value)) throw new InputError(`--state-transport must be one of auto, gh, git (got ${value})`)
+      opts['state-transport'] = value
+      continue
+    }
+    if (token.startsWith('--state-repo=')) { opts['state-repo'] = token.slice('--state-repo='.length); continue }
     if (token.startsWith('--project=')) { opts.project = token.slice('--project='.length); continue }
     if (token.startsWith('-')) throw new InputError(`unknown option ${JSON.stringify(token)}`)
     if (opts.command === null) {

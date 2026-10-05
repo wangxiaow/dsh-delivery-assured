@@ -28,9 +28,10 @@ import { execFileSync } from 'node:child_process'
 import { join, dirname, resolve } from 'node:path'
 import { loadSpine, standardBindings, loadProjectConfig, fileDigest, sha256 } from '../../packages/delivery-assured/scripts/lib/common.mjs'
 import { collectCriticalViolations, coverageRows, blockingForView, classifyManualReview } from '../../packages/delivery-assured/scripts/lib/coverage-core.mjs'
-import { loadModel, classifyEvidence, checkUnknowns } from '../../packages/delivery-assured/scripts/lib/model.mjs'
+import { classifyEvidence, checkUnknowns } from '../../packages/delivery-assured/scripts/lib/model.mjs'
 import { validateArtifact } from './ci-artifact.mjs'
-import { attemptFromCI, computeConvergence } from '../../packages/delivery-assured/scripts/lib/convergence.mjs'
+import { attemptFromCI } from '../../packages/delivery-assured/scripts/lib/convergence.mjs'
+import { STATE_SOURCE, openStateView } from '../../packages/delivery-assured/scripts/lib/state-view.mjs'
 import { validateFixtureTarget, validatePromotionReceipt, isolationWarnings } from './ci-trust.mjs'
 import { scopeForSlice } from '../../packages/delivery-assured/scripts/lib/selection.mjs'
 import { decodeEvidence, confirmOwnerApproval, finalizeMvp } from './ci-mvp.mjs'
@@ -135,7 +136,12 @@ async function main() {
   }
   const root = resolve(opts.project)
   const cfg = loadProjectConfig(root)
-  const model = loadModel(root)
+  // The workflow overlaid refs/heads/delivery-state/main onto this checkout before calling
+  // this job, so the working tree *is* the authoritative state. Naming that source here and
+  // taking the budget from the shared view is what keeps this job's numbers identical to
+  // what `resume` and the session tools report for the same history.
+  const stateView = openStateView(root, { source: STATE_SOURCE.WORKTREE })
+  const model = stateView.model
   const blockers = []
   const notes = []
   let sourceReceipt = null
@@ -441,7 +447,7 @@ async function main() {
   if (evidence) try {
     promotedAttempt = attemptFromCI(evidence, model)
     model.attempts = [...model.attempts.filter((entry) => entry.ci_ref !== evidence.evidence_id), promotedAttempt]
-    const budget = computeConvergence(model, { slice: evidence.scope.slice_id, candidate: evidence.bindings.code_revision, parentBaseline: parentId })
+    const budget = stateView.budget({ slice: evidence.scope.slice_id, candidate: evidence.bindings.code_revision, parentBaseline: parentId })
     // Name every reason the budget is blocked. Reporting only `invalid_entries` once
     // produced "blocked: []" and the cause had to be reconstructed by hand.
     if (budget.blocked) {

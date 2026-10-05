@@ -354,10 +354,17 @@ test('the Spine may only grow: a dropped case is reported', () => {
   assert.equal(b.blocked, true)
 })
 
-test('both CLIs use only shared convergence budget computation', () => {
+test('both CLIs take their budget from the one shared state view, never their own', () => {
   for (const name of ['attempts', 'resume']) {
     const source = readFileSync(new URL(`../scripts/${name}.mjs`, import.meta.url), 'utf8')
-    assert.match(source, /computeConvergence\(model/)
+    // One loader and one calculator: the script names the state source, opens the shared
+    // view, and asks that view for the budget. Deriving a second position from the model
+    // here is what let two entries disagree about one history.
+    assert.match(source, /openStateView\(/)
+    assert.match(source, /\.budget\(/)
     assert.doesNotMatch(source, /function budgetPosition|function progressSignal|state\?\.replans/)
   }
+  // The calculator itself still exists exactly once, inside the shared view.
+  const stateView = readFileSync(new URL('../scripts/lib/state-view.mjs', import.meta.url), 'utf8')
+  assert.match(stateView, /computeConvergence\(model/)
 })

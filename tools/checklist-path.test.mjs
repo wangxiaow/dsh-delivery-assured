@@ -9,7 +9,9 @@ const root = mkdtempSync(join(tmpdir(), 'checklist-path-offline-'))
 try {
   const pack = join(root, '安装 pack with spaces #1'), lib = join(pack, 'scripts/lib'), project = join(root, 'isolated project')
   mkdirSync(lib, { recursive: true }); mkdirSync(project)
-  for (const name of ['common.mjs', 'yaml.mjs']) cpSync(join(repository, 'packages/delivery-assured/scripts/lib', name), join(lib, name))
+  // An installed pack ships the whole lib directory. Copying a hand-written file list
+  // meant a newly imported module travelled broken and only this suite noticed.
+  cpSync(join(repository, 'packages/delivery-assured/scripts/lib'), lib, { recursive: true })
   cpSync(join(repository, 'packages/delivery-assured/templates'), join(pack, 'templates'), { recursive: true })
   const { loadChecklists } = await import(pathToFileURL(join(lib, 'common.mjs')).href)
   const found = loadChecklists(project, { paths: { templateChecklists: null } }, { product: { project_types: ['cli', 'api', 'web_saas'] } })

@@ -9,7 +9,7 @@
  * Run: node plugins/dsh-delivery-assured/test/smoke.mjs
  */
 
-import { mkdtempSync, rmSync, cpSync, existsSync, readFileSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, rmSync, cpSync, existsSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { execFileSync } from 'node:child_process'
 import { dirname, join, resolve } from 'node:path'
@@ -66,6 +66,13 @@ check('resolves a Node executable', node !== null && existsSync(node.bin), node 
 // An explicit plugin config must win over the environment, so a parent process
 // cannot leak its own project into this plugin instance.
 const config = { packRoot, projectRoot, nodeBin: node?.bin }
+/**
+ * The suites in this file must not need the network: the authoritative-state default is
+ * exercised further down against a fixture whose `origin` is a local bare repository. For
+ * the real-project checks the working-tree source is named explicitly, so a machine with no
+ * reachable remote does not turn a gate into a set of connection timeouts.
+ */
+const offlineConfig = { ...config, stateSource: 'worktree' }
 const isolated = bridge.buildContext({ ...config, projectRoot }, repoRoot)
 check('an explicit config resolves the same project', isolated.project.root === projectRoot, isolated.project.root)
 
@@ -132,7 +139,7 @@ const ctx = {
   effect: () => () => {},
   logger: { info: () => {}, warn: () => {}, error: (message) => loggedErrors.push(String(message)) },
 }
-entry.apply(ctx, config)
+entry.apply(ctx, offlineConfig)
 
 const tools = registered.filter((r) => !r.__skill)
 const skills = registered.filter((r) => r.__skill)
@@ -140,8 +147,8 @@ const toolNames = tools.map((t) => t.name)
 check('the helper verdict is one of the two documented outcomes', ['ok', 'refuse'].includes(verdict), `${verdict} (${defineToolModule.defineToolSource})`)
 if (verdict === 'ok') {
   check(
-    'registers the five read-only tools plus the two automatic-loop tools',
-    toolNames.length === 7 && ['delivery_gaps', 'delivery_coverage', 'delivery_resume', 'delivery_attempts', 'delivery_verify_local', 'delivery_iteration', 'delivery_ci'].every((n) => toolNames.includes(n)),
+    'registers the six read-only tools plus the two automatic-loop tools',
+    toolNames.length === 8 && ['delivery_gaps', 'delivery_coverage', 'delivery_resume', 'delivery_attempts', 'delivery_verify_local', 'delivery_verify_independent', 'delivery_iteration', 'delivery_ci'].every((n) => toolNames.includes(n)),
     toolNames.join(', '),
   )
 } else {
@@ -156,7 +163,8 @@ check(
 )
 check(
   'the runtime skill body documents the authority boundary',
-  /Only the trusted CI verification job produces/i.test(skills[0]?.__skill?.content || ''),
+  /independent execution of the frozen Required acceptance/i.test(skills[0]?.__skill?.content || '') &&
+    /default backend is the DSH host/i.test(skills[0]?.__skill?.content || ''),
 )
 check('the skill name is kebab-case, as the registry requires', /^[a-z0-9]+(-[a-z0-9]+)*$/.test(skills[0]?.__skill?.name || ''))
 check(
@@ -195,6 +203,33 @@ if (tools.length === 0) {
   const brokenAnswer = gapsTool ? await gapsTool.execute({ phase: 'contract' }) : null
   check('a broken configuration produces a diagnostic instead of throwing', brokenAnswer?.ok === false, JSON.stringify(brokenAnswer)?.slice(0, 200))
   check('the diagnostic explains what to configure', Array.isArray(brokenAnswer?.problems) && brokenAnswer.problems.length > 0)
+
+  // The "every entry reads one history" check lives in the fixture section below, where a
+  // local bare `origin` carries the authoritative state, so it needs no network.
+
+  // Opening an iteration needs no predecessor: a first requirement and the round after a
+  // delivered one both start from the journal alone. Observed on a throwaway copy so the
+  // real project's journal is never touched.
+  const iterationRoot = mkdtempSync(join(tmpdir(), 'dsh-da-iteration-'))
+  try {
+    cpSync(projectRoot, iterationRoot, { recursive: true })
+    rmSync(join(iterationRoot, '.agent', 'ITERATIONS.jsonl'), { force: true })
+    const opened = []
+    entry.apply({ tools: { register: (t) => opened.push(t) }, shell: shellStub, effect: () => () => {}, get: () => undefined, logger: {} }, { ...offlineConfig, projectRoot: iterationRoot })
+    const openTool = opened.find((t) => t.name === 'delivery_iteration')
+    const first = await openTool.execute({ action: 'open', requirement: '第一条需求：只读状态工具' })
+    check('the first requirement opens an iteration without an existing one', first.ok === true && first.iteration?.id === 'IT-001', JSON.stringify(first)?.slice(0, 240))
+    check('the first round continues nothing', first.iteration?.iteration_of === undefined, JSON.stringify(first.iteration))
+    await openTool.execute({ action: 'close' })
+    const second = await openTool.execute({ action: 'open', requirement: '第二轮：加入导出' })
+    check('a delivered project opens the next round', second.ok === true && second.iteration?.id === 'IT-002' && second.iteration?.iteration_of === 'IT-001', JSON.stringify(second)?.slice(0, 240))
+    const rejected = await openTool.execute({ action: 'open' })
+    check('opening without a requirement writes nothing and says so', rejected.ok === false && /requirement/.test(rejected.problems.join(' ')), JSON.stringify(rejected)?.slice(0, 200))
+    const journal = readFileSync(join(iterationRoot, '.agent', 'ITERATIONS.jsonl'), 'utf8')
+    check('the journal stayed append-only through both rounds', (journal.match(/IT-001/g) || []).length >= 2 && journal.includes('IT-002'))
+  } finally {
+    rmSync(iterationRoot, { recursive: true, force: true })
+  }
 }
 
 // The exact condition that once killed a live DSH session: no resolvable host helper,
@@ -241,7 +276,7 @@ const steeringCtx = {
   effect: () => () => {},
   logger: { info: () => {}, warn: () => {} },
 }
-entry.apply(steeringCtx, config)
+entry.apply(steeringCtx, offlineConfig)
 
 check('registers exactly one protected-path guard', guardCalls.length === 1, `guards=${guardCalls.length}`)
 const guard = guardCalls[0]
@@ -267,7 +302,7 @@ check(
 const selfHosting = []
 entry.apply(
   { tools: { register: () => {}, guard: (g) => selfHosting.push(g) }, shell: shellStub, effect: () => () => {}, get: () => undefined, logger: {} },
-  { ...config, protectRepoMaterial: false },
+  { ...offlineConfig, protectRepoMaterial: false },
 )
 check(
   'a self-hosting project can switch off the repository-material layer',
@@ -305,13 +340,18 @@ check(
 )
 
 const kernelModule = await import(new URL('../lib/kernel.js', import.meta.url).href)
-const kernel = kernelModule.createKernel({ resolveContext: (cwd) => bridge.buildContext(config, cwd) })
+const kernel = kernelModule.createKernel({ resolveContext: (cwd) => bridge.buildContext(offlineConfig, cwd), stateSource: 'worktree' })
 await kernel.refresh(shellStub, projectRoot)
 const kernelText = kernel.text()
 check('the kernel names the project it inspected', kernelText.includes(resolve(projectRoot)), kernelText.slice(0, 160))
 check('the kernel states the trust boundary', /不是完成凭证/.test(kernelText) && /受保护标准/.test(kernelText))
 check('the kernel reports what is still owed and the budget', /还欠:/.test(kernelText) && /预算:/.test(kernelText))
 check('the kernel names the protected paths a session must not write', /CONTRACT\.yaml/.test(kernelText) && /acceptance\/spec/.test(kernelText))
+check(
+  'a project configured for the working-tree source is invoked with the offline flag',
+  /\bresume\.mjs\b/.test(String(lastCommand)) && /--offline/.test(String(lastCommand)),
+  String(lastCommand),
+)
 const fixtureKernel = kernelModule.renderKernel({
   project: 'P:/demo',
   candidate: 'a'.repeat(40),
@@ -330,6 +370,34 @@ check(
   fixtureKernel.slice(0, 200),
 )
 check('an unresolvable project says so instead of inventing a summary', /未找到可检查的交付项目/.test(kernelModule.renderKernel({})))
+// The kernel is the one place a session cannot avoid seeing: if its numbers came from a
+// working-tree fallback, it must say so where the failure happened.
+const degradedKernel = kernelModule.renderKernel({
+  project: 'P:/demo',
+  candidate: 'a'.repeat(40),
+  durable_state: { requested: true, available: false, transport: null, reason: 'gh: Bad credentials (HTTP 401)' },
+  state_authoritative: false,
+  state_degraded: true,
+  state_degraded_reason: 'the authoritative refs/heads/delivery-state/main could not be read; the numbers are working-tree facts',
+  budget: { counted: 4, limits: { total_attempt_limit: 8, replan_limit: 2 }, history_known: false },
+})
+check(
+  'a degraded kernel says the numbers are working-tree facts, not a recovery result',
+  /权威状态: 读取失败或降级/.test(degradedKernel) && /不是恢复结果/.test(degradedKernel),
+  degradedKernel.split('\n').find((line) => /权威状态/.test(line)) || degradedKernel.slice(0, 200),
+)
+const authoritativeKernel = kernelModule.renderKernel({
+  project: 'P:/demo',
+  candidate: 'a'.repeat(40),
+  durable_state: { requested: true, available: true, sha: 'b'.repeat(40), transport: 'gh' },
+  state_authoritative: true,
+  budget: { counted: 7, limits: { total_attempt_limit: 8, replan_limit: 2 }, history_known: true },
+})
+check(
+  'an authoritative kernel names the channel it read',
+  /权威状态: bbbbbbbbbbbb via gh/.test(authoritativeKernel),
+  authoritativeKernel.split('\n').find((line) => /权威状态/.test(line)) || authoritativeKernel.slice(0, 200),
+)
 
 // ------------------------------------------------- invocation through the package
 // Run the suite once more from a copied package directory, to prove the plugin
@@ -402,6 +470,133 @@ if (process.env.DSH_DA_SMOKE_CHILD === '1') {
   } finally {
     rmSync(orphanRoot, { recursive: true, force: true })
   }
+}
+
+// ------------------------------ one authoritative history for every entry, offline
+// The session entries used to disagree about one project — the resume tool read the durable
+// state ref while the iteration summary and the kernel rendered the working tree — and so
+// reported different budgets for the same history. This fixture makes the difference
+// observable without a network: a local bare `origin` carries
+// refs/heads/delivery-state/main, and the working tree deliberately does *not* carry the
+// state, exactly like a clean checkout. Only the ref-reading entry knows the history.
+const fixtureBase = mkdtempSync(join(tmpdir(), 'dsh-da-state-'))
+const fixtureRepo = join(fixtureBase, 'repo')
+const fixtureOrigin = join(fixtureBase, 'origin.git')
+const fixtureProject = join(fixtureRepo, 'project')
+const gitAt = (cwd, args) => execFileSync('git', ['-C', cwd, ...args], { encoding: 'utf8' }).trim()
+const writeAt = (root, relative, content) => {
+  mkdirSync(dirname(join(root, relative)), { recursive: true })
+  writeFileSync(join(root, relative), content, 'utf8')
+}
+/** Publish the state the way the recorder does: a parentless tree of state scopes only. */
+function publishState(root, base, files) {
+  const index = join(base, `state-index-${String(Date.now()).slice(-6)}-${String(Math.random()).slice(2)}`)
+  const env = {
+    ...process.env,
+    GIT_INDEX_FILE: index,
+    GIT_AUTHOR_NAME: 'State', GIT_AUTHOR_EMAIL: 'state@example.invalid',
+    GIT_COMMITTER_NAME: 'State', GIT_COMMITTER_EMAIL: 'state@example.invalid',
+  }
+  const plumbing = (args, input) => execFileSync('git', ['-C', root, ...args], { encoding: 'utf8', env, input }).trim()
+  plumbing(['read-tree', '--empty'])
+  for (const [path, content] of Object.entries(files)) {
+    plumbing(['update-index', '--add', '--cacheinfo', '100644', plumbing(['hash-object', '-w', '--stdin'], content), path])
+  }
+  const commit = plumbing(['commit-tree', plumbing(['write-tree']), '-m', 'state'])
+  gitAt(root, ['update-ref', 'refs/heads/delivery-state/main', commit])
+  gitAt(root, ['push', '--quiet', '--force', 'origin', 'refs/heads/delivery-state/main:refs/heads/delivery-state/main'])
+  rmSync(index, { force: true })
+  return commit
+}
+try {
+  mkdirSync(fixtureOrigin)
+  gitAt(fixtureOrigin, ['init', '--quiet', '--bare'])
+  gitAt(fixtureOrigin, ['symbolic-ref', 'HEAD', 'refs/heads/main'])
+  cpSync(projectRoot, fixtureProject, { recursive: true })
+  // A clean checkout shape: candidate material only, none of the durable state.
+  for (const relative of [
+    '.agent/attempts.jsonl', '.agent/reviews.yaml', '.agent/STANDARD_CHANGES.yaml',
+    'ci/mvp-ready.json', 'tests/spine/manifest.yaml',
+  ]) rmSync(join(fixtureProject, relative), { force: true })
+  for (const tree of ['ci/evidence', 'ci/baseline', 'ci/recording']) rmSync(join(fixtureProject, tree), { recursive: true, force: true })
+  gitAt(fixtureRepo, ['init', '--quiet', '-b', 'main'])
+  gitAt(fixtureRepo, ['config', 'user.name', 'Fixture'])
+  gitAt(fixtureRepo, ['config', 'user.email', 'fixture@example.invalid'])
+  gitAt(fixtureRepo, ['remote', 'add', 'origin', fixtureOrigin])
+  gitAt(fixtureRepo, ['add', '-A'])
+  gitAt(fixtureRepo, ['commit', '--quiet', '-m', 'fixture candidate material'])
+  gitAt(fixtureRepo, ['push', '--quiet', 'origin', 'HEAD:refs/heads/main'])
+
+  // Three failed attempts on one root cause and one Replan: a non-trivial budget that no
+  // entry may recompute differently.
+  const fixtureCases = ['A-CLI-STATUS-JSON', 'A-CLI-INPUT-REJECTED']
+  const fixtureLedger = [1, 2, 3].map((n) => ({
+    attempt_id: `S1-A${n}`, slice_id: 'S1', slice_key: 'S1', at: `2026-01-0${n}T00:00:00.000Z`,
+    root_cause_key: 'fixture-same-root', hypothesis: `fixture attempt ${n}`, result: 'failed',
+    standard_digest: 'a'.repeat(64), required_passed: 1, required_total: fixtureCases.length,
+    spine_failures: 0, critical_violations: [], required_case_ids: [...fixtureCases], note: '',
+  })).concat([{
+    attempt_id: 'S1-R1', slice_id: 'S1', slice_key: 'S1', at: '2026-01-04T00:00:00.000Z',
+    hypothesis: 'Replan: the retry assumption was falsified', result: 'blocked',
+    replan: {
+      slice_id: 'S1', falsified_assumption: 'one more retry would pass', previous_approach: 'retry',
+      new_approach: 'change the comparison identity', next_discriminating_checks: ['A-CLI-STATUS-JSON'],
+      preserved_obligations: ['J-DELIVERY-STATUS'], evidence_refs: [], scope_changed: false,
+    },
+  }])
+  publishState(fixtureRepo, fixtureBase, {
+    'project/.agent/attempts.jsonl': `${fixtureLedger.map((entry) => JSON.stringify(entry)).join('\n')}\n`,
+    'project/tests/spine/manifest.yaml': 'last_updated: null\nupdated_by: fixture\ncase_ids: ["A-CLI-STATUS-JSON"]\n',
+  })
+  check('the fixture working tree carries no ledger, so only the ref can report history', !existsSync(join(fixtureProject, '.agent', 'attempts.jsonl')))
+
+  const fixtureConfig = { packRoot, projectRoot: fixtureProject, nodeBin: node?.bin }
+  const resolveFixture = (cwd) => bridge.buildContext(fixtureConfig, cwd)
+  const budgetOf = (answer) => {
+    const budget = answer?.budget
+    return budget ? JSON.stringify({ limits: budget.limits, counted: budget.counted, replans: budget.replans, remaining: budget.remaining, history_known: budget.history_known }) : null
+  }
+
+  // The default kernel reads the authoritative ref, so it reports the history the working
+  // tree does not contain.
+  const refKernel = kernelModule.createKernel({ resolveContext: resolveFixture })
+  await refKernel.refresh(shellStub, fixtureProject)
+  const refCommand = String(lastCommand)
+  const refKernelText = refKernel.text()
+  check('the kernel default reads the authoritative state ref', /\bresume\.mjs\b/.test(refCommand) && /--durable-state/.test(refCommand), refCommand)
+  check('the kernel reports the history only the ref carries', /预算: attempts 3\/8，replans 1\/2/.test(refKernelText), refKernelText.split('\n').find((line) => /预算/.test(line)) || refKernelText.slice(0, 300))
+
+  // Naming the working tree explicitly is a different input and it says so, which is why the
+  // default must never be chosen silently per entry.
+  const treeKernel = kernelModule.createKernel({ resolveContext: resolveFixture, stateSource: 'worktree' })
+  await treeKernel.refresh(shellStub, fixtureProject)
+  const treeCommand = String(lastCommand)
+  const treeKernelText = treeKernel.text()
+  check('an explicitly offline kernel says so instead of reading the ref', /--offline/.test(treeCommand), treeCommand)
+  check('the working-tree source reports an unknown history rather than a delivered one', /预算: attempts 0\/8/.test(treeKernelText) && /账本 缺失/.test(treeKernelText), treeKernelText.split('\n').find((line) => /预算/.test(line)) || treeKernelText.slice(0, 300))
+
+  if (tools.length > 0) {
+    // The tools, on the same fixture: resume, the iteration summary and the budget report
+    // must all read the ref and therefore agree.
+    const fixtureRegistered = []
+    entry.apply(
+      { tools: { register: (t) => fixtureRegistered.push(t) }, shell: shellStub, skills: { register: () => {} }, effect: () => () => {}, get: () => undefined, logger: {} },
+      fixtureConfig,
+    )
+    const byName = (name) => fixtureRegistered.find((t) => t.name === name)
+    const resumed = await byName('delivery_resume').execute({})
+    const iterated = await byName('delivery_iteration').execute({ action: 'status' })
+    const attempts = await byName('delivery_attempts').execute({})
+    check('delivery_resume reads the fixture history through the ref', budgetOf(resumed) !== null && /"counted":3/.test(budgetOf(resumed)), budgetOf(resumed))
+    check('delivery_iteration status agrees with delivery_resume on one history', budgetOf(resumed) !== null && budgetOf(resumed) === budgetOf(iterated), `${budgetOf(resumed)} vs ${budgetOf(iterated)}`)
+    check('delivery_attempts agrees with the same history', /"counted":3/.test(budgetOf(attempts) || ''), budgetOf(attempts))
+    const offlineResume = await byName('delivery_resume').execute({ offline: true })
+    check('the explicit offline flag reports the working tree, not the ref', /"counted":0/.test(budgetOf(offlineResume) || '') && /"history_known":false/.test(budgetOf(offlineResume) || ''), budgetOf(offlineResume))
+  } else {
+    process.stdout.write('note: the host helper is not usable here, so the tool-level agreement check ran only in the kernel; state-view.test.mjs and the runtime probe cover the rest\n')
+  }
+} finally {
+  rmSync(fixtureBase, { recursive: true, force: true })
 }
 
 // ------------------------------------------------------------------- reporting

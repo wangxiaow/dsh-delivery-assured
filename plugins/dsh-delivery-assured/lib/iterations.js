@@ -77,7 +77,7 @@ export function reduceIterations(events = []) {
 /** Read the journal. A missing file is an empty journal; a malformed line is not. */
 export function loadIterations(root) {
   const path = join(root, ITERATION_LEDGER)
-  if (!existsSync(path)) return { path, events: [], raw: '' }
+  if (!existsSync(path)) return { path, events: [], raw: '', problems: [] }
   const raw = readFileSync(path, 'utf8')
   const events = []
   const problems = []
@@ -103,6 +103,35 @@ export function appendIteration(root, event) {
   mkdirSync(dirname(path), { recursive: true })
   appendFileSync(path, `${JSON.stringify(event)}\n`, 'utf8')
   return path
+}
+
+/**
+ * Open the next iteration from a user requirement.
+ *
+ * Opening depends on the journal, never on a currently open iteration: the first
+ * requirement of a project has no predecessor, and a project whose last iteration was
+ * already closed (a delivered round) starts the next round the same way. The new id is
+ * derived from the ids already recorded, so appending can never overwrite history.
+ * `iteration_of` points at the most recent recorded iteration when there is one, which is
+ * what makes a later session able to tell "this round continues that one" from "this is
+ * the first round".
+ *
+ * It returns the appended event and the number of unreadable journal lines, so a caller
+ * reports a damaged journal instead of repairing or ignoring it.
+ */
+export function openIteration(root, { requirement, at = new Date().toISOString() } = {}) {
+  const loaded = loadIterations(root)
+  const reduced = reduceIterations(loaded.events)
+  const previous = reduced.iterations.at(-1) || null
+  const event = {
+    id: nextIterationId(loaded.events),
+    kind: 'opened',
+    at,
+    requirement,
+    ...(previous ? { iteration_of: previous.id } : {}),
+  }
+  appendIteration(root, event)
+  return { event, previous: previous ? previous.id : null, unreadable_lines: loaded.problems.length + reduced.problems.length }
 }
 
 /**

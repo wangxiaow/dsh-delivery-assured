@@ -21,8 +21,9 @@
  * `spec/` is the protected standard.
  */
 
-import { existsSync, readFileSync } from 'node:fs'
+import { existsSync, statSync } from 'node:fs'
 import { isAbsolute, join, relative, resolve } from 'node:path'
+import { bootstrapSummary, deriveBootstrap, isBootstrapWritable, readProjectPaths } from './bootstrap.js'
 
 /** Tools that write files, and the argument that names the target. */
 export const WRITE_TOOL_PATHS = Object.freeze({
@@ -40,6 +41,9 @@ export const PROTECTED_RELATIVE = Object.freeze([
   '.agent/project.yaml',
   '.agent/evidence',
   '.agent/attempts.jsonl',
+  // The frozen-standard anchor the host-executed verifier checks. A Candidate that could
+  // re-freeze the acceptance it is judged by would make the anchor decorative.
+  '.agent/standards',
   'ci/verifier.yaml',
   'ci/evidence',
   'ci/baseline',
@@ -75,6 +79,11 @@ const norm = (path) => resolve(path).replace(/[\\/]+$/, '').toLowerCase()
 export function protectedRoots(projectRoot, { repoRoot = null, protectRepoMaterial = true } = {}) {
   const root = resolve(projectRoot)
   const roots = PROTECTED_RELATIVE.map((p) => join(root, p))
+  // The frozen acceptance standard and the spine manifest are protected standards whether
+  // or not the project's own paths block names them: the kernel says so, CI compares them
+  // byte for byte, and a project that never declared them must not be the loophole.
+  roots.push(join(root, 'tests', 'acceptance', 'spec'))
+  roots.push(join(root, 'tests', 'spine'))
   // The frozen acceptance standard and the spine manifest come from the project's
   // own configuration; a wrong path here would silently unprotect the standard.
   const cfgPaths = readProjectPaths(root)
@@ -89,24 +98,6 @@ export function protectedRoots(projectRoot, { repoRoot = null, protectRepoMateri
 }
 
 /** Minimal reader: only the `paths:` block is needed, and only to protect it. */
-function readProjectPaths(projectRoot) {
-  const file = join(projectRoot, '.agent', 'project.yaml')
-  if (!existsSync(file)) return {}
-  const out = {}
-  let inPaths = false
-  try {
-    for (const raw of readFileSync(file, 'utf8').split('\n')) {
-      const line = raw.replace(/\t/g, '  ')
-      if (/^paths:\s*$/.test(line)) { inPaths = true; continue }
-      if (inPaths && /^\S/.test(line)) break
-      const match = inPaths ? /^\s+([A-Za-z0-9_]+):\s*(\S+)\s*$/.exec(line) : null
-      if (match) out[match[1]] = match[2].replace(/^["']|["']$/g, '')
-    }
-  } catch {
-    return {}
-  }
-  return out
-}
 
 /** Whether a resolved target sits inside one of the protected prefixes. */
 export function isProtectedTarget(target, roots) {
@@ -123,6 +114,25 @@ function deny(message) {
   return `${message} [delivery-assured guard: protected by v0.5 §12; only the CI verification job produces evidence and only its Promotion job advances a Baseline]`
 }
 
+/** The denial text, plus the open bootstrap step when one is open (steering, not authority). */
+function protectedMessage(what, projectRoot, target, bootstrap) {
+  const base = `${what} on ${relative(projectRoot, target) || target} was denied: this path is a protected standard, not a Candidate artifact`
+  if (!bootstrap || bootstrap.phase !== 'bootstrapping') return deny(base)
+  return deny(
+    `${base}; this new project is still in bootstrap ${bootstrap.step_index}/${bootstrap.step_count} — create ${bootstrap.next_artifact} next ` +
+      `(order: ${bootstrap.steps.map((step) => step.targets[0]).join(' → ')}); the window closes for good once the Contract is frozen`,
+  )
+}
+
+/** A bootstrap artifact whose step has not opened yet: the order is the point. */
+function outOfOrderMessage(what, projectRoot, target, bootstrap) {
+  return deny(
+    `${what} on ${relative(projectRoot, target) || target} was denied: bootstrap ${bootstrap.step_index}/${bootstrap.step_count} is open and ` +
+      `nothing beyond it may be created yet — create ${bootstrap.next_artifact} first ` +
+      `(order: ${bootstrap.steps.map((step) => step.targets[0]).join(' → ')})`,
+  )
+}
+
 /**
  * Build the guard.
  *
@@ -133,11 +143,23 @@ function deny(message) {
 export function buildGuard({ workspace = process.cwd(), resolveProject = null, repoRoot = null, protectRepoMaterial = true } = {}) {
   const cache = new Map()
 
+  /**
+   * Protected roots for one project, re-derived when the project's own `paths:` block
+   * changes. A bootstrap session writes `.agent/project.yaml` mid-session, and a cached
+   * set would then protect the defaults while ignoring the paths that file just declared.
+   */
   const rootsFor = (projectRoot) => {
     const key = norm(projectRoot)
-    if (!cache.has(key)) cache.set(key, protectedRoots(projectRoot, { repoRoot, protectRepoMaterial }))
-    return cache.get(key)
+    const signature = projectPathsSignature(projectRoot)
+    const cached = cache.get(key)
+    if (cached && cached.signature === signature) return cached.roots
+    const roots = protectedRoots(projectRoot, { repoRoot, protectRepoMaterial })
+    cache.set(key, { signature, roots })
+    return roots
   }
+
+  /** The lifecycle is never cached: every artifact a session creates changes it. */
+  const lifecycleFor = (projectRoot) => deriveBootstrap(projectRoot, { repoRoot, protectRepoMaterial })
 
   return function guard(exec) {
     if (!exec || typeof exec.name !== 'string') return undefined
@@ -145,6 +167,7 @@ export function buildGuard({ workspace = process.cwd(), resolveProject = null, r
     const projectRoot = typeof resolveProject === 'function' ? resolveProject(cwd) : cwd
     if (!projectRoot) return undefined
     const args = exec.arguments && typeof exec.arguments === 'object' ? exec.arguments : {}
+    const bootstrap = lifecycleFor(projectRoot)
 
     if (Object.hasOwn(WRITE_TOOL_PATHS, exec.name)) {
       const roots = rootsFor(projectRoot)
@@ -158,8 +181,14 @@ export function buildGuard({ workspace = process.cwd(), resolveProject = null, r
         return deny(`${exec.name} was denied because no target path could be resolved from ${JSON.stringify(Object.keys(args))}`)
       }
       for (const target of targets) {
+        // The explicit bootstrap window: the ordered, still-uncreated artifacts of a new
+        // project. Everything else protected stays denied even while it is open.
+        if (isBootstrapWritable(target, bootstrap.writable)) continue
+        if (bootstrap.phase === 'bootstrapping' && isBootstrapWritable(target, bootstrap.scope)) {
+          return outOfOrderMessage(exec.name, projectRoot, target, bootstrap)
+        }
         if (isProtectedTarget(target, roots)) {
-          return deny(`${exec.name} on ${relative(projectRoot, target) || target} was denied: this path is a protected standard, not a Candidate artifact`)
+          return protectedMessage(exec.name, projectRoot, target, bootstrap)
         }
       }
       return undefined
@@ -177,8 +206,12 @@ export function buildGuard({ workspace = process.cwd(), resolveProject = null, r
           if (!token || token.startsWith('-')) continue
           const target = resolveTarget(token, cwd)
           if (target && existsSync(target) === false && !isProtectedTarget(target, roots)) continue
+          if (target && isBootstrapWritable(target, bootstrap.writable)) continue
+          if (target && bootstrap.phase === 'bootstrapping' && isBootstrapWritable(target, bootstrap.scope)) {
+            return outOfOrderMessage('shell command writing', projectRoot, target, bootstrap)
+          }
           if (target && isProtectedTarget(target, roots)) {
-            return deny(`shell command writing ${relative(projectRoot, target) || target} was denied: this path is a protected standard`)
+            return protectedMessage('shell command writing', projectRoot, target, bootstrap)
           }
         }
       }
@@ -188,3 +221,15 @@ export function buildGuard({ workspace = process.cwd(), resolveProject = null, r
     return undefined
   }
 }
+
+/** Cheap change detector for `.agent/project.yaml` (the file that redefines the roots). */
+function projectPathsSignature(projectRoot) {
+  try {
+    const stats = statSync(join(projectRoot, '.agent', 'project.yaml'))
+    return `${stats.mtimeMs}:${stats.size}`
+  } catch {
+    return 'absent'
+  }
+}
+
+export { bootstrapSummary }

@@ -321,3 +321,308 @@ refs/heads/baseline/main"，并且没有 `durable_state` 字段——即脚本�
 [离线恢复工具](packages/delivery-assured/scripts/resume.mjs) 在未叠加 durable state 的工作区退出 1 是预期阻塞，不代表 GitHub 上没有 Evidence/Baseline。对 BL-001 精确 revision 恢复状态，结果为机验 8、Review 待审 3；较新 checkout 会如实报告旧 Evidence 陈旧。代码存在和本地测试通过不把欠账转成已交付。
 
 [保护与操作前提](ci/protection/README.md)说明角色边界和初始化条件；[可编辑状态摘要](project/.agent/STATE.yaml)不是第二份权威账本。当前会话默认工作目录不等于目标仓库，所有诊断均显式指向本仓库的 project。
+
+## 本轮：自动交付主链路的四个阻断（2026-10-05）
+
+范围只有四项：iteration `open`、DSH→CI 参数派发、状态与预算统一、CI run 归属。没有新建外部 E2E 项目、没有解决 self-hosting、没有做 Standards 清债、没有新增 Planner/Approval/Reflection、没有降低保护，也没有重置历史/预算/Evidence。
+
+### 1. iteration `open` 不再要求已有 iteration
+
+原实现把 `open` 和其它 action 走同一条 `const id = args.iteration || current?.id` 判定，于是**第一个需求**（没有 current）和**已交付项目**（全部 close，没有 current）都直接返回
+`no iteration is open; call action=open with the user requirement first`——需求原文无法落账，恢复链在第一步就断。
+
+[openIteration](plugins/dsh-delivery-assured/lib/iterations.js) 现在只依赖日志：id 由已记录 id 推出，`iteration_of` 指向最近一条记录（有则继续，无则首轮）。`open` 不接收、也不需要 iteration id；缺 requirement 时明确拒绝且不写任何字节；[loadIterations](plugins/dsh-delivery-assured/lib/iterations.js) 对不存在的账本同样返回 `problems: []`，空账本/坏行都只报告不抛错。
+
+### 2. DSH→CI 参数派发按各 action 自己的 schema
+
+宿主把整包 tool 参数（`candidate`/`mode`/`expected_parent`/`verify_run_id`/`expected_state_sha`…）原样交给 `requestRun`，其中属于别的 action 的字段是 `undefined` 但仍然**存在**，而 `buildDispatch` 的“只接受声明输入”白名单是按 `Object.keys` 判定的，所以每条路径都在平台被调用前就失败：`unknown verify input mode`、`unknown promote input verify_run_id`……**整条派发文路从未真正跑通过**。
+
+现在 [requestForWorkflow](plugins/dsh-delivery-assured/lib/ci-request.js) 是参数到请求的唯一通路，每个 action 只取自己声明的输入、只取有值的字段；`delivery_ci` 不再转发别的 action 的字段，`delivery_resume`/`delivery_coverage`/`delivery_attempts`/kernel 各自按 `--durable-state` / `--offline` 构造。歧义派发不再报告 `ok: true`。
+
+真实运行时入口实证见下：在桌面运行时（0.2.0-rc.2，`app.asar` 内的宿主 `defineTool`）注册出的 `delivery_ci` 上，`verify` 的 argv 只含 `candidate_ref/parent_baseline/slice_id/sliceKey/hypothesis`，`promote` 只含 `mode/expected_parent/verify_run_id/verify_run_attempt`，恢复入口只含各自输入，任一 argv 都没有 `undefined`。
+
+### 3. 状态恢复与预算只走一处 state view
+
+同一份历史在不同入口得出不同预算：`resume --durable-state` 报 **7 次 attempt / 剩 1 次 / history_known: true**，而 `resume --offline` 报 **4 次 / 账本未知**，并附上一条看似数据损坏的
+`comparison rebase DEC-8-ENVIRONMENT is missing approval`。原因是每个入口各自选来源：脚本默认读工作树，kernel 与 iteration 摘要固定 `--offline`，CI promote 靠 workflow 先铺 state。
+
+新增 [state-view.mjs](packages/delivery-assured/scripts/lib/state-view.mjs)：来源只命名一次（`durable-ref` 或 CI 的 `worktree`），model 由该来源的 `loadModel` 得到，预算只由该 view 的 `budget()`（内部就是 `computeConvergence`）给出。[resume](packages/delivery-assured/scripts/resume.mjs)、[attempts](packages/delivery-assured/scripts/attempts.mjs)、[coverage](packages/delivery-assured/scripts/coverage.mjs)、`delivery status`、[ci-promote](ci/tools/ci-promote.mjs) 都改接这一处；kernel 与 `delivery_iteration(action=status)` 默认与 `delivery_resume` 同源（`--durable-state`），插件配置 `stateSource: worktree` 时显式改用 `--offline` 并如实说明——不再有静默的第二来源。写路径（`--record`/`--replan`）与只读状态报告不能混用，混用是输入错误（退出码 2）。
+
+### 4. CI run 关联必须唯一，禁止选最新
+
+原实现派发后只列最近 5 个 run，`fresh[0]` / 第一个 `workflow_dispatch` 就当成本次 request 的 run——并发派发、同一 workflow 的 PR run、以及“派发成功后 run 还没出现”都会把别的东西当成自己的。
+
+现在 [requestRun](plugins/dsh-delivery-assured/lib/ci-request.js)：派发**前**先读该 workflow 的 run 集合（读不到就不派发，因为无法归因的 run 同样消耗冻结候选）；派发后在有界重读中要求**恰好一个**“新出现的、`workflow_dispatch` 的”run 才报告 `requested`，并回报 `correlation.{new_run_ids,eligible_run_ids,excluded_run_ids}` 与该请求真正的 `frozen_candidate`（run 的 head 是派发分支，不是候选）。0 个或 ≥2 个一律 `ambiguous` 并列出看到的 id，不选最新、不重试。不再用平台时间与本地时钟比较，也不允许 `undefined` 进入 argv。
+
+### 实证
+
+| 验证 | 结果 |
+|---|---|
+| build gate（`node project/scripts/verify-build.mjs`） | **exit 0，103.7s**，无 skip note；含新增 `state-view.test.mjs` |
+| 本地 verify（S1） | exit 0；build/clean_boot/slice_acceptance/regression_spine 通过，8/8 Required 实际执行 |
+| 本地 verify（S2） | exit 0；`A-AUTO-POLICY-DEFAULT` / `A-AUTO-NO-FALSE-PASS` / `A-ITERATION-RECOVERY` 3/3 通过 |
+| [state-view 回归](packages/delivery-assured/tests/state-view.test.mjs) | 20/20：本地 bare `origin` 上同一历史经 `durable-ref` 与 `worktree` 的 budget 签名逐字节相同；干净检出只读工作树时 counted 0/历史未知（反例非空）；resume/attempts/coverage 与共享 view 一致；写入+只读状态混用退出 2 |
+| [automation 回归](plugins/dsh-delivery-assured/test/automation.test.mjs) | 16/16：首次 open、已交付后开下一轮、空账本/坏行、每 action 输入隔离、唯一关联（1 个新 run）、两个新 run、非 dispatch 新 run、读不到派发前集合则不派发、refused |
+| [plugin smoke](plugins/dsh-delivery-assured/test/smoke.mjs) | 58 checks，**23s 且不依赖网络**：fixture（本地 bare origin）证明 kernel 默认读 state ref 并报出工作树里没有的历史（3/8、replan 1/2），显式 `worktree` 时报 0/8 且标注账本缺失 |
+| [host-resolution + 真实运行时探针](plugins/dsh-delivery-assured/test/host-resolution.test.mjs) | 65 checks：用桌面运行时自身启动 [runtime-entry.probe.mjs](plugins/dsh-delivery-assured/test/runtime-entry.probe.mjs)，真实宿主 `defineTool` 注册后调用已注册执行器——`IT-001`→close→`IT-002(iteration_of IT-001)`；verify 关联到唯一新 run 4242；promote 只带 promote 字段；两个新 run 判 `ambiguous` 且 `ok:false`；refused 不关联 |
+| **真实 headless 会话（模型驱动）** | 用应用自带运行时 `bin.js`（0.2.0-rc.2）+ `delivery-auto` profile 启动 `dsh-headless`，`--patch` 覆盖到隔离 fixture（`gh` 为记录型替身，**没有真实派发**）。模型实际调用：`delivery_iteration action=open` → **IT-001**（首个需求即开）；`action=status` 与 `delivery_resume` → 两者 budget **完全一致**（同源同算）；`delivery_ci action=request workflow=verify` → 记录到的 argv 恰为 `candidate_ref/parent_baseline/slice_id/sliceKey/hypothesis` 五个字段、无 promote 字段、无 `undefined`，工具返回 `status: requested`、`run_id: 4242`、`correlation.eligible_run_ids: ["4242"]`（派发前一次 `run list`、派发一次、派发后一次），未消耗任何真实 CI attempt |
+| 真实平台只读半边 | `gh run list --workflow verify.yml --limit 20 --json …headBranch,…` 实测可用（19 条，含 `pull_request` 与 `workflow_dispatch`），确认关联读的字段与“非 dispatch 新 run 必须排除”都是真实存在的 |
+
+### 本轮明确没有做 / 仍未解决
+
+1. **没有花掉真实 CI attempt。** 真实派发会消耗冻结候选（预算 7/8，只剩 1 次），因此所有派发验证都走记录型 `gh` 替身（真实 argv、真实插件代码、真实运行时、真实模型会话），加上真实平台的只读 `run list`。真实一次 dispatch 未在平台上执行。
+2. **会话侧的权威状态读取仍被 git 传输挡住（本轮新确认，未修）。** 真实 headless 会话里 `delivery_resume` 报 `durable_state.available: false`，两种远端各有一种环境性失败：本地路径远端 → `sh.exe: *** fatal error - couldn't create signal pipe, Win32 error 5`（受约束 shell 下 MSYS2 无法建信号管道，与 harness 记录的“不能开命名管道”一致）；https 远端 → `schannel: AcquireCredentialsHandle failed: SEC_E_NO_CREDENTIALS`。于是会话回落到工作树读数（真实仓库：counted 4、`history_known: false`，并带一条 `comparison rebase DEC-8-ENVIRONMENT is missing approval` 的假阻塞）。**这不是本轮四项之一，也不是本轮引入的**（`delivery_resume` 上一轮起就默认 `--durable-state`）；四项修复让各入口改成**同一个**来源与同一套计算，所以现在它们会给出同一个（回落后的）结果，但权威数字仍进不了会话。这是 Step 2 的主要剩余阻断，修法需要换掉会话侧的状态传输（例如走 `gh api`，本会话已证明 `gh` 在该受限 shell 下可用），不在本轮范围。
+3. **插件仍未挂载进任何在用 profile**（`desktop` 按设计拒绝安装），所以真实桌面会话里现在仍然没有 `delivery_*` 工具；装进 profile 与重启应用不在本轮范围。上面的真实会话用的是独立 `delivery-auto` profile + `--patch` 覆盖。
+4. `ci-stage.mjs` 仍然拒绝改动 `packages/**`、`plugins/**` 的候选，因此本轮改动**无法经 PR 集成**（与上一轮同一约束）。
+5. 上一轮记录的“插件 shell 接缝里 git 读不到仓库”缺陷不在本轮四项之内；第 2 点给出了更精确的两种成因。相关 `runCaptured` 改动仍在工作树中未提交。
+
+## 本轮：会话内稳定读取权威状态（进入 Step 2 前的最后一个阻断）
+
+范围只有一件事：让真实 DSH 会话稳定拿到 authoritative durable state，并在独立测试 profile 里真正用上 `delivery_*` 工具。没有建外部 E2E 项目、没有改 self-hosting / `ci-stage` 保护、没有做 Standards 清债、没有新增 Planner/Approval/Reflection、没有大规模重构、没有改动正在使用的 `desktop` profile，也没有提交/推送/跑真实 CI。
+
+上一轮记录的两个会话侧缺口在本轮已修：**（a）权威状态读取被 git 传输挡住**（换成 `gh`/GitHub API）；**（b）插件 shell 接缝里 `git` 读不到仓库**（worktree 事实不再依赖 `git` 子进程）。
+
+### 1. 权威状态的新传输路径：GitHub API（`gh`），不再给 git 接缝打补丁
+
+新增 [gh-api.mjs](packages/delivery-assured/scripts/lib/gh-api.mjs)（`gh` 定位、REST/GraphQL/raw 三种调用、GitHub remote URL 解析），[durable-state.mjs](packages/delivery-assured/scripts/lib/durable-state.mjs) 重构成"取权威状态"的传输层，行为：
+
+- `--state-transport auto|gh|git`（脚本、`delivery status`、插件 `stateTransport` 配置都支持）；默认 `auto` = 先 `gh`、再 `git`。**显式指定 `gh` 时不会退到 `git`**。
+- gh 通道一次读取 **3 个请求**：`/git/ref/heads/delivery-state/main` → `/git/trees/{sha}?recursive=1` → 一次 GraphQL 批量取全部 blob 文本；任何 blob 的 `text` 为 null、`oid` 与树不符、字节数与树记录不符，就退回 `Accept: application/vnd.github.raw` 的逐对象端点（实测该端点逐字节等于树记录的 358 字节）。
+- 仓库来源三级：`--state-repo` / `DSH_DELIVERY_CI_REPO` → `.git/config` 里 remote 的 URL（**读文件，不启进程**）→ 失败即如实报"无法解析 GitHub 仓库"。
+- **fail closed 的范围扩大到整个提交树**：`project/` 之外的条目、状态作用域之外的条目、非 blob 条目（子模块）、平台截断的树、非法 UTF-8、字节数与树记录不符 —— 任一命中即拒绝整次读取。
+- **权威状态不可读时明确失败**：新增 `state_authority`（`durable-ref` / `worktree` / `worktree-fallback` / `durable-ref-with-worktree-fill`）与逐条 `attempted[{transport,ok,reason}]`；请求了权威状态却读不到时，`resume`/`attempts`/`coverage`/`delivery status` **退出码 1**，并把"下面的数字来自工作树，**不是恢复结果**"写成阻塞项。`durable-ref-with-worktree-fill` 同样降级并阻塞——CI 的回落对象是它正在验证的冻结候选，会话的回落对象是任意检出，两者不等价。
+- 本地 Git 事实不再需要 `git` 子进程：新增 [worktree-git.mjs](packages/delivery-assured/scripts/lib/worktree-git.mjs)，从 `.git/HEAD`、loose refs、`packed-refs`（含 linked worktree 的 `gitdir` + `commondir`）读 revision，从 `.git/config` 读 remote URL；`worktreeRevision()` 先试 `git`、失败再读文件并**说明来源**。这不是锦上添花：拿不到候选 revision 时，所有 Evidence 都按绑定判为陈旧，**即使权威状态读到了，恢复结果仍然是错的**（这正是上一轮"已交付却报阻塞"的另一半原因）。
+- 唯一状态计算仍是 [state-view.mjs](packages/delivery-assured/scripts/lib/state-view.mjs) 的 `loadModel` + `computeConvergence`；新传输只负责"取得权威状态"，没有第二套状态计算。插件 `delivery_resume` / `delivery_coverage` / `delivery_attempts` / `delivery_iteration(status)` / Global Kernel 全部走同一来源与同一通道，`delivery_iteration(status)` 额外回报 `baseline` 与 `state_authority`，使"三个入口是否一致"可以被直接比对而不是靠读散文。
+
+### 2. 独立测试 profile 与其验证方式
+
+- profile：`delivery-auto`（`dsh-base` + `dsh-headless` + `dsh-delivery-assured`）。插件是 **junction 指向当前工作树** `plugins/dsh-delivery-assured`，所以 profile 挂载的就是当前插件与 Skill；`packages/**`、`plugins/**` 与用户在用的 `desktop` profile 都未被改动。
+- 宿主：应用自带运行时 `resources/app.asar/…/@deepseek-ai/dsh/lib/bin.js`（0.2.0-rc.2，与插件声明的 peer 线一致），`ELECTRON_RUN_AS_NODE=1` + `--profile delivery-auto` 启动 headless 会话（GUI 子系统进程的 stdout 必须由句柄重定向才能捕获）。
+- 新增 [tools/dsh-session-probe.mjs](tools/dsh-session-probe.mjs)：真实会话里让模型调用 `delivery_resume` 与 `delivery_iteration(action=status)`，并把 system prompt 里 kernel 自己的 `权威状态:` / `可信起点:` / `预算:` 行抄回来；**期望值先由操作包自己算一遍**，模型必须复现，编数字即失败。`--phase worktree` 用 `--patch` 覆盖成 `stateSource: worktree` 做对照，`--overlay` 可把会话指向另一个项目目录。它是证据生产者，**不进 build gate**（需要模型与网络）。
+
+### 3. 真实恢复探针结果（三个入口，同一段历史）
+
+工作区（main = `1c5b1c3`，HEAD 领先 BL-003 的已验证 revision；durable state = `4c40c80f`）三处入口，全部经 `gh`：
+
+| 入口 | state | baseline | attempts | replans | 结论 |
+|---|---|---|---|---|---|
+| `delivery_resume` | `4c40c80fd19b` via gh，`state_authority: durable-ref` | `BL-003` @ `fd575a5` | 7/8 | 1/2 | exit 1（该候选上证据陈旧，**真实**阻塞） |
+| `delivery_iteration(action=status)` | 同上 | 同上 | 同上 | 同上 | 与 resume 逐字段一致 |
+| kernel 启动（system prompt 原文） | `权威状态: 4c40c80fd19b via gh，只读，未写入本项目` | `可信起点: Baseline BL-003` | `预算: attempts 7/8` | `replans 1/2；账本 已知` | 同源同算 |
+
+探针 **27/27 通过**；同一会话里 7 个 `delivery_*` 工具全部可见（`delivery_attempts, delivery_ci, delivery_coverage, delivery_gaps, delivery_iteration, delivery_resume, delivery_verify_local`）且真实被调用。
+
+把同一个 profile `--overlay` 指向 **`fd575a5` 的干净检出**（工作树里没有 Baseline 元数据、recording、累积 Spine），同一个探针 **28/28 通过**：
+
+```text
+candidate    : fd575a553630
+baseline     : BL-003 @ fd575a553630 (refs/heads/baseline/main)
+durable state: 4c40c80fd19b on refs/heads/delivery-state/main via gh (read-only; nothing was written into this project)
+state source : durable-ref (gh)
+verified 18   owed 0
+budget       : attempts 7/8  replans 1/2
+PASS resume: 18 verified, 0 owed
+```
+
+即：**会话内自助恢复已经是完整恢复**（18 项机验、0 欠账、预算 7/8、Replan 1/2），不是"差别小一点的读数"。
+
+### 4. authoritative state 与 worktree 故意不同时，读的是哪一个
+
+同一台机器、同一个项目、同一版本插件，只差一个配置键：
+
+| | `--durable-state`（默认，`gh`） | `--offline` / `stateSource: worktree` |
+|---|---|---|
+| baseline | **BL-003 @ fd575a5** | `(none recorded locally)` |
+| evidence | 11 条 | 6 条 |
+| attempts | **7/8，剩 1，`history_known: true`** | 4/8，`remaining` 未知，`history_known: false` |
+| replans | 1/2 | 1/2 |
+| 阻塞 | 4 条（均为"该候选上证据陈旧"，真实） | 5 条（含一条**假的** `comparison rebase DEC-8-ENVIRONMENT is missing approval`） |
+| kernel 自述 | `权威状态: … via gh` | `权威状态: 未读取（工作树来源）；下列数字只描述工作树` |
+
+结论：**默认路径读的是 durable state（authoritative），不是工作树**；工作树只有在被显式选择时才作为来源，而且报告/kernel 都会写明。会话探针的 worktree 对照阶段 **19/19 通过**：它报 attempts 4、无 baseline、无 state SHA，kernel 写"未读取（工作树来源）"。
+
+回归里另有一个**故意冲突**的确定性反例（[durable-transport.test.mjs](packages/delivery-assured/tests/durable-transport.test.mjs)）：durable ref 带 `BL-003` + 2 条 attempt，工作树带 `BL-999` + 1 条 attempt；权威读取取到的是 ref 的历史，而工作树多出来的那两个文件被逐个列入 `worktree_filled` 并把该次读取标为 degraded。
+
+### 5. 验证与 build gate
+
+| 验证 | 结果 |
+|---|---|
+| build gate（`node project/scripts/verify-build.mjs`） | **exit 0，101.4s**，无 skip note；含新增 `durable-transport.test.mjs` |
+| 本地 verify（S1） | exit 0；build/clean_boot/slice_acceptance/regression_spine 通过，8/8 Required 实际执行 |
+| 本地 verify（S2） | exit 0；3/3 Required 通过 |
+| [durable-transport.test.mjs](packages/delivery-assured/tests/durable-transport.test.mjs) | 16/16：URL/仓库解析、文件版 ref 读取、gh 三请求通道、GraphQL→raw 回落、越界/子模块/截断拒绝、404 与读取失败区分、显式通道不退让、worktree 回落被标记、权威 vs 工作树冲突反例 |
+| [state-view.test.mjs](packages/delivery-assured/tests/state-view.test.mjs) | 34/34：新增 authority 断言、通道来源断言，以及"无 `gh` 无 `git` 时 `resume --durable-state` 必须退出 1 且自我标注为 worktree 事实" |
+| [durable-state.test.mjs](packages/delivery-assured/tests/durable-state.test.mjs) | 4/4（作用域、不可读、越界、CI 回落语义） |
+| [smoke.mjs](plugins/dsh-delivery-assured/test/smoke.mjs) | 60 checks：新增"降级 kernel 必须写'不是恢复结果'""权威 kernel 必须写出通道" |
+| host-resolution / compatibility / trust-boundary / skill-registry / automation | 65 / 83 / 26 / 14 / 16 全通过 |
+| 真实 headless 会话（模型驱动） | 独立 profile：27/27（工作区）、28/28（`fd575a5` 干净检出）、19/19（worktree 对照） |
+
+顺手修掉一个"只在新导入下才暴露"的测试脆弱点：[checklist-path.test.mjs](tools/checklist-path.test.mjs) 原来只拷贝 `common.mjs` + `yaml.mjs`，新增 `common.mjs → worktree-git.mjs` 后它在隔离目录里直接 `ERR_MODULE_NOT_FOUND`；现在拷贝整个 `scripts/lib`（已安装包的真实形态）。
+
+### 6. 仍未解决 / 残余风险（都不是本轮的"未完成"，是如实记账）
+
+1. **CI 的 overlay 语义仍会接受候选自己带的状态文件。** `completeFromFallback` 逐文件回落与 CI 的 `tar -x` 覆盖一致：ref 已带某个状态树时，工作树里多出来的文件也会被读入（回归里故意放的 `ci/baseline/BL-999.json` 就会被读）。会话侧现在的处理是**标记降级 + 阻塞**，绝不当成恢复成功；CI 侧同一语义尚未加固（候选本不该能改 `ci/**`，guard 也拒绝会话写），记为欠账。
+2. **`verified 18 / 0 owed` 只在检出等于 Baseline 的已验证 revision 时成立。** 当前工作区 HEAD 领先 `fd575a5` 且带 35 项未提交改动，所以真实工作区如实报"记录绑定该 revision、在此读取为陈旧"——这是绑定语义，不是回归。
+3. **本轮改动无法经 PR 集成**（`ci-stage.mjs` 拒绝改动 `packages/**`、`plugins/**` 的候选），且**未提交、未推送、未跑真实 CI**：BL-003 之后没有新的真实 Evidence，durable state 仍是 `4c40c80f`。
+4. `desktop` profile 仍未挂载插件（按本轮要求未改动），所以真实**桌面**会话里仍然没有 `delivery_*`；上面的真实会话用的是独立 `delivery-auto` profile。
+5. `git` 与 `gh` 都不可达时会话会**明确失败**（探针用空 PATH 反例固定了这一行为），不会退回工作树读数冒充完成。
+
+## 本轮：普通项目的默认自动交付不再要求 GitHub CI / 受保护引用 / Baseline（2026-10-05）
+
+范围只有一件事：**默认完成路径改为「Agent 实现 → DSH/宿主实际执行冻结验收 → FAIL 自动修复 → PASS 自动 Delivered」**，
+GitHub Trusted CI、受保护 authority refs、push token 与 Baseline 晋升全部保留为**可选的高保障后端**。
+没有继续补 GitHub CI bootstrap，没有动 placeholder / guard / self-hosting / Standards 清债，没有新建外部测试项目，
+没有提交、推送、跑真实 CI，也没有改写任何既有失败历史或预算。
+
+### 1. 验证后端：谁执行，以及不执行什么
+
+新增 [verification.mjs](packages/delivery-assured/scripts/lib/verification.mjs)：`.agent/project.yaml` 的
+`verification.backend` 决定谁实际执行冻结验收。
+
+| 声明 | 执行者 | accepted issuer |
+|---|---|---|
+| 未声明（默认） | DSH/宿主：[verify.mjs](packages/delivery-assured/scripts/verify.mjs) `--backend host --write-evidence` | `host:independent-verifier`（同时接受配置的 CI issuer） |
+| `trusted_ci` | 受保护 GitHub 工作流 + 晋升 job | 只有 `ci.trusted_issuer` |
+| `both` | 宿主执行，两种记录都算 | 两者 |
+| 拼错的值 | 退回 `trusted_ci`（失败关闭，不静默放宽） | 只有 CI issuer |
+
+声明 `trusted_ci` 的项目再调宿主后端会被直接拒绝（退出码 2），所以「更强的后端」不能被更弱的替代。
+本仓库自己的 `project/.agent/project.yaml` 显式声明 `backend: trusted_ci`——它的冻结 Contract 里
+BR-EVIDENCE-NOT-LOCAL 要求平台来源，这条**语义没有放宽**，只是从「所有项目的默认」改成「该项目的显式选择」。
+
+### 2. 冻结标准：没有 authority ref 也要能证明验收是冻结的
+
+新增 [standard-freeze.mjs](packages/delivery-assured/scripts/lib/standard-freeze.mjs) 与受保护的
+`.agent/standards/FREEZE.json`（guard 新增保护该目录）：
+
+- `verify.mjs --freeze-standard` 记录每个受保护标准文件（Contract、项目配置、验收 manifest 与 spec、verifier 配置、Slice）
+  的 SHA-256，以及这些字节所属的提交 revision；累积 Spine **不在**冻结范围内（它是会增长的 durable artifact）。
+- 验证前逐文件比对：改动、删除、新增都以 `STANDARD_DRIFT` 拒绝整次运行；再用 Git blob id（`rev-parse <rev>:<file>`
+  对 `hash-object <file>`）交叉核对提交字节，不受换行过滤器影响，未提交的改动不能被冻结成「原本如此」。
+- 重新冻结必须显式 `--allow-standard-change`，并把上一个 standard id 记入记录历史——标准变化可见，不会被抹掉。
+
+### 3. 记录校验：不是把 CI 校验删掉，而是换成等价的正面要求
+
+[evidence.mjs](packages/delivery-assured/scripts/lib/evidence.mjs) 新增 `validateHostEvidenceRecord`，
+按记录自己声明的 `environment.kind` 分派（`host_independent` → host 校验器，其他 → 原 CI 校验器，后者一字未改）：
+
+- `build` / `clean_boot` / `slice_acceptance` / `regression_spine` **必须真的退出 0**；只有冻结 verifier 配置声明为
+  CI-only（`local: skip`）或显式 `excluded` 且写明原因的门才可以是 `not_applicable`。把验收门标成不适用无法通过校验。
+- 必须携带本次执行的 run token、逐门退出码、保留日志摘要、harness 结果文件摘要，且 `artifacts` 必须包含该日志。
+- 必须**正面声明没有观测到**打包部署与运行时隔离（`environment.observed` / `not_observed`），并写进交付报告的 limitations。
+- 候选工作树必须与记录绑定的提交 revision 一致（验证自身产物、Spine 与 attempt 账本除外）。
+- Required 集合与大小写、逐例 outcome、skip 计数等断言与 CI 侧完全相同；手写一个 `PASS` 文件、跳过一例、或绑定旧 revision 都不 fresh。
+
+### 4. 交付判定 `Delivered` 与累积 Spine
+
+- [completion.mjs](packages/delivery-assured/scripts/lib/completion.mjs) 新增 `assessDelivery` /
+  `independentVerification`：`Delivered` 只在「本项目的验证后端在当前精确候选上实际执行了冻结 Required 集合
+  与累积 Spine 且全部通过、无 Critical 欠账、预算未耗尽」时成立，并如实列出该后端观测不到的部分。
+- 宿主后端由 `verify.mjs` 自己把这次验证过的 case 追加进 Spine（CI 后端由晋升 job 做同一件事），
+  并**追加**一条 attempt 到 `.agent/attempts.jsonl`；Spine 只能增长，丢掉一个已验证 case 会让整次运行失败。
+- 记录保留「增长前的 Spine」，所以造成增长的那条记录不会因为自己的效果而判定为陈旧（与之前修的 CI promotedSpine 同一类问题）。
+- 「平台没有 `refs/heads/delivery-state/main`」现在是一个独立事实：`state_authority: worktree-no-durable-state-ref`，
+  不是读取失败，也不阻塞；真的读不到（网络/权限/无通道）仍然退出 1 并标明数字来自工作树。
+
+### 5. 插件
+
+- 新工具 `delivery_verify_independent`：宿主实际执行冻结验收并写入记录，FAIL 时点名门与 Required case，
+  提示「自己修后重跑，不要问用户普通技术问题」。`delivery_verify_local` 仍只是诊断。
+- `delivery_iteration action=close` 不再由会话宣布：它先用操作包重算判定，不是 `Delivered` 就**拒绝且一行不写**。
+- Global Kernel 与 Skill 改写默认路径（含「你不能自己宣布完成」与「Baseline 是可选高保障」），
+  `integrations/deepseek-harness/delivery-assured/SKILL.md` 由 `skill.js` 的正文重新生成，避免两份手册漂移。
+
+### 6. 在真实项目上跑出来的三个缺陷（都是本轮引入并在本轮修掉）
+
+1. **保留 receipt 被当成第二条 Evidence。** 运行日志目录在 `.agent/evidence/runs/<run id>/` 下，而
+   `loadEvidence` 只认「文件名以 .json 结尾且有 evidence_id」，于是 receipt（我给它写了 `evidence_id`）
+   被读成同一 id 的第二条记录、且没有 issuer，预算因此报 `record issuer null ...` 并阻塞。
+   修法两处：[loadEvidence](packages/delivery-assured/scripts/lib/common.mjs) 不再把 `runs/` 下的运行产物当证据；
+   receipt 改用 `evidence_ref`，不再自称 `evidence_id`。
+2. **环境身份里带上了 run id，导致每次通过都被判成「标准变了」。** `comparisonDigest` 的输入包含
+   `environment.config_fingerprint`，而我把它写成 `host:<平台>-<架构>-node<版本>-<run id>`：同一候选上的两次通过
+   比较身份不同 → `changed_comparison` 非空、无进展计数逐次上升 → 第 3–4 次尝试就会要求一次并不需要的 Replan。
+   修法是稳定的 `host:<平台>-<架构>-node<版本>` + `fixture_revision: null`，并加回归
+   「同一候选上的两次宿主运行必须共享比较身份、不得伪造 Replan」。
+3. **候选干净度检查把状态字母留在路径上，于是真实会话被自己的迭代日志拒之门外。**
+   原解析是「去掉一个状态字母再 trim」，而 git 对未暂存修改写的是 ` M <path>`（前导空格）：
+   解析结果变成 `M tests/spine/manifest.yaml`，所有状态排除项失配 → `CANDIDATE_DIRTY`。
+   真实会话因此连续两次执行失败（FAIL 记录 `muvcbql0`/`muvcplht`），并被逼到用 `git stash` 绕过；
+   stash 又把已累积的 Spine 还原，使下一次记录写进「Spine 从 24 掉到 0」的收缩，预算随之阻塞。
+   修法两处：[porcelainPaths](packages/delivery-assured/scripts/verify.mjs) 按 `XY <path>` 正确解析
+   （含前导空格、`??`、`R  old -> new`、引号路径），并把「会话本来就会写的状态文件」
+   （`.agent/ITERATIONS.jsonl`、`.agent/STATE.yaml`、attempt 账本、Spine、reviews/STANDARD_CHANGES、`ci/mvp-ready.json`、
+   Evidence 与冻结锚点）明确列为**状态而非候选材料**，同时把这份清单写进记录
+   （`execution.host.state_excluded`）以便逐项核对。回归同时固定了反例：改动 `scripts/gate.mjs`
+   这类真实源码仍然必须被拒。
+   这些记录（都发生在本项目此前完全没有 attempt 记录的状态下）已归档到
+   `external/_run/bootstrap-e2e-pre-fix-archive/`（含逐条解释），交付结论由修复后的后端重新实际执行得出。
+
+### 7. 实证
+
+| 验证 | 结果 |
+|---|---|
+| build gate（`node project/scripts/verify-build.mjs`） | **exit 0**，无 skip note；新增 `host-verification.test.mjs` |
+| 本地 verify（S1 / S2） | exit 0；S1 4 门通过 + 8/8 Required 实际执行，S2 3/3 |
+| [host-verification.test.mjs](packages/delivery-assured/tests/host-verification.test.mjs) | 13/13：宿主真实执行并写入记录+日志+receipt；无 CI、无 ref、无 Baseline 即 `Delivered`；两次运行共享比较身份；缺 case、跳过、绑定旧 revision、手写 PASS、标准漂移、未提交候选、验收门被标不适用全部被拒；CI 入口与 `trusted_ci` 声明保持原样 |
+| [state-view.test.mjs](packages/delivery-assured/tests/state-view.test.mjs) | 38/38：新增「平台没有该 ref 不是读取失败」「要求该 ref 的项目仍失败关闭」「不可读仍降级」 |
+| [durable-transport.test.mjs](packages/delivery-assured/tests/durable-transport.test.mjs) | 16/16：`ls-remote --exit-code` 的 2 才算「不存在」，网络/权限失败不再冒充不存在 |
+| evidence / convergence / completion / durable-state / capture-run / verification / yaml | 全通过 |
+| plugin smoke / host-resolution / compatibility / trust-boundary / bootstrap-lifecycle / skill-registry / install-plugin | 60 / 87 / 91 / 26 / 56 / 14 / 39 全通过（工具数 8，含新工具） |
+
+### 8. `todo-bootstrap-e2e`：那条真实自然语言需求到达 Delivered
+
+项目：`external/todo-bootstrap-e2e`（`origin` = wangxiaow/todo-bootstrap-e2e，只有 `main`；
+没有 `standards/acceptance`、没有 `delivery-state/main`、没有受信工作流材料、没有推送令牌——这正是它上一轮阻塞的原因）。
+未声明 `verification.backend`，因此走默认宿主后端。冻结标准 `5c30b810…`（30 个受保护文件，revision `3ab2207`）。
+
+生效位置的实际执行（全部由 `verify.mjs --backend host` 真实运行，`build` / `clean_boot` /
+`persistence_migration` / `slice_acceptance` / `regression_spine` 逐门 passed，`deployment` 按冻结 verifier
+配置是 CI-only → `not_applicable/ci_only`；两次都 **24/24 Required 实际执行、0 skip、0 fail**）：
+
+| 来源 | evidence | 说明 |
+|---|---|---|
+| 直接运行 | `host:independent-verifier:host-muvda41p-e756d411` | Spine 0 → 24 |
+| 真实 headless 会话（模型驱动） | `host:independent-verifier:host-muvdbhgf-c8d8b4f3` | 会话先写迭代日志（IT-004），再让宿主执行；**没有再出现 `git stash` 绕过**，随后 `action=verified` + `action=close` |
+
+最终读数（`resume`，候选 `3ab2207`）：
+
+```text
+delivered    : yes — host:independent-verifier:host-muvdbhgf-c8d8b4f3 (host_executed, 24/24 cases)
+verification : host-executed independent verifier（未声明 backend，默认）
+owed         : 全空；verified 37 项义务
+budget       : attempts 2/8，剩余 6，history_known true，terminal_passed true，invalid 0，critical 0，blockers 0
+state source : worktree-no-durable-state-ref（平台没有该 ref，不是读取失败）
+limitations  : 宿主后端没有观测到打包部署与运行时隔离
+```
+
+迭代日志保留全部历史：IT-001（需求原文 / bootstrap 记录 / **上一轮的英文阻塞原因原样保留** / verified / closed）、
+IT-002、IT-003（真实会话遇到 porcelain 缺陷时如实记下的 FAIL 与阻塞）、IT-004（修复后走完默认路径并关闭）。
+账本只保留修复后实际执行的两条 PASS（同候选、同比较身份、同冻结标准）。
+
+### 9. 本轮明确没有做 / 仍未解决
+
+1. **已提交并推送到远端 `main`——但走的是 owner 授权的一次性通道，不是正常合并路径。**
+   本轮改动是一个提交（`1c5b1c3` 之后一次）。推送按机制做：读并保存 `main` 保护的全部字段到仓库外的快照
+   （`external/_run/protection-20261005-231551/main-protection.before.json`，恢复用 body 由它派生）→
+   临时 `DELETE .../branches/main/protection` → `git push origin main`（快进，无强推）→ 立即
+   `PUT .../branches/main/protection` 按快照原值恢复 → 再读一次 API 逐字段比对 before/after。
+   **没有**改写历史、没有 force、没有动 `main` 之外的引用。
+   仍然成立的平台事实：`main` 的必需检查是 `structural checks` + `verify candidate`
+   （`strict=true`、`enforce_admins=true`，由 API 核实），而 [ci-stage.mjs](ci/tools/ci-stage.mjs) 明确拒绝任何
+   改动 `packages/**` 或 `plugins/**` 的候选——本轮的改动正好全在这两个目录里。也就是说这个提交本身
+   **无法通过 `verify candidate`**（`verify.yml` 也不在 push 上触发，所以这次没有产生红色必需检查）。
+   该冲突仍未解决：只有当候选/staging 边界改变（让操作包自身的改动也能被验证）之后，本仓库才能重新
+   只靠正常路径集成自己的操作包。
+2. **宿主后端的可变状态仍在工作树里**（`.agent/evidence/`、`.agent/attempts.jsonl`、`tests/spine/manifest.yaml`）。
+   `.agent/evidence/` 与账本不在候选提交里；但 Spine 是受版本控制的文件，**提交它会让 HEAD 前进，
+   从而使刚写下的记录绑定旧 revision 而变陈旧**——这是 CI 用独立 durable-state ref 解决的那类问题，
+   宿主后端目前靠「保持未提交」回避，记为欠账。
+3. **插件仍未挂载进在用的 `desktop` profile**（按设计不在本轮范围）；上面的真实会话仍用独立 `delivery-auto` profile。
+4. `templates.test.mjs` 的「文档区分本地检查与真实交付权威」用例在本轮之前就已失败（它读的
+   `README.md` / `integrations/deepseek-harness/README.md` / `project/AGENTS.md` 是会话开始前就存在的未提交工作树状态，
+   且该套件不在 build gate 里）；本轮未修，也不在范围内。
+5. **归档不是无损的跨会话状态。** 被归档的四条开发期记录只是移出生效位置，账本里对应的行也一并移除；
+   文档（`external/_run/bootstrap-e2e-pre-fix-archive/README.md` 与迭代日志的 IT-003 备注）逐条说明原因，
+   原字节全部保留。之所以必须这样做：其中一条记录写着「Spine 从 24 掉到 0」（由 `git stash` 绕过造成），
+   只要它还参与预算，本项目就会在**没有任何真实失败**的情况下永久阻塞。

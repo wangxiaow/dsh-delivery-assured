@@ -10,19 +10,30 @@ whenToUse: >-
 You are working inside a repository that carries four authoritative objects:
 **Contract** (what must still be delivered), **Coverage** (which Slice, acceptance
 and current result covers each obligation), **Evidence** (which revision, against
-which standards, in which environment passed) and **Baseline** (the trusted
-starting point). Coverage and every report are recomputed; there is no second
-hand-written ledger.
+which standards, in which environment passed) and **Baseline** (the optional
+high-assurance starting point that the protected Promotion job maintains).
+Coverage and every report are recomputed; there is no second hand-written ledger.
 
 ## Authority boundary — read this first
 
-- A local run is a **diagnostic**. It never produces evidence and never advances a Baseline.
-- Only the trusted CI verification job produces `evidence.json`.
-- Only the CI Promotion job holds the credential that advances `refs/heads/baseline/*`.
+- A local run is a **diagnostic**. `delivery_verify_local` never produces evidence and cannot
+  complete anything.
+- Completion is decided by an **independent execution of the frozen Required acceptance on the
+  exact candidate revision**. You cannot declare it: the verdict is recomputed from records,
+  and `delivery_iteration action=close` is refused until that verdict is `Delivered`.
+- The **default backend is the DSH host itself**: `delivery_verify_independent` runs build,
+  clean boot, persistence/migration, the frozen Slice acceptance and the accumulated Spine for
+  real, under a run token the verifier generates, and retains the record, the raw gate log and
+  the frozen-standard digests. A hand-written record, a skipped Required case, a filtered run or
+  a modified spec is not a pass.
+- The **protected CI workflow, the authority refs and the Baseline are the optional
+  high-assurance backend**, not a precondition. A project whose frozen Contract needs platform
+  provenance declares `verification.backend: trusted_ci` and keeps exactly the old rule.
 - `.agent/STATE.yaml` is an editable summary. A `DONE` in it is not completion evidence,
   and neither is a model answering "完成".
 - You may not delete a Required obligation, weaken an assertion, add `skip`/`only` to a
-  required case, or narrow the verification set to make a run pass.
+  required case, or narrow the verification set to make a run pass. You may not re-freeze the
+  standard to match a failing implementation.
 - A Critical correctness violation (unauthorized access, wrong attribution, data
   corruption) blocks immediately. It is never deferred as ordinary technical debt.
 
@@ -34,27 +45,62 @@ hand-written ledger.
    the remaining budget and the next verification step.
 3. Do not restate history from memory. Recompute it.
 
+### A new project has no Contract yet — that is a lifecycle, not an error
+
+When the supervision summary says `bootstrap`, the project is new and the order below is
+enforced by the protected-path guard. Do not go looking for the artifact formats in the
+operation pack: the summary and every tool answer name the next artifact.
+
+1. **Record the requirement first** — `delivery_iteration` with `action=open` and the user's
+   requirement verbatim. A first requirement needs no existing iteration, and this is what
+   makes the round recoverable after a crash, a restart or a model change.
+2. Then create, in this order: `.agent/project.yaml` → `ci/verifier.yaml` →
+   `tests/acceptance/spec` (+ `tests/spine/manifest.yaml`) → `.agent/slices/<id>.yaml` →
+   `.agent/CONTRACT.yaml`.
+   The verifier is interpreted through the project metadata, the Contract may only reference
+   acceptance that is already frozen, and `verify`/`precheck` are given a Slice that must
+   already be declared — hence the order. Until a step is done, the paths of the later steps
+   stay refused by the guard; writing the Contract closes the bootstrap window permanently,
+   and every protected standard becomes read-only again. Run `delivery_gaps --phase contract`
+   **before** freezing: once the Contract exists this session cannot edit it.
+3. Re-run `delivery_resume` between steps: it reports the current step, the next artifact
+   and the same budget the kernel shows. `delivery_verify_local` cannot run before
+   `ci/verifier.yaml` exists, and it says so instead of pretending to diagnose.
+
 ## Default completion: independent automatic acceptance
 
 The frozen Contract declares the completion rule in `completion_policy`:
 
-- `independent_auto` — the default for new projects: the delivery closes from acceptance that
-  was actually executed on the frozen revision plus release prerequisites observed on the
-  platform. The user does not run scripts, edit receipts or post approval comments.
-- `human_review` — a real human review record is required. An automatic run can never
-  manufacture one, and an **undeclared policy resolves to `human_review`**: silence never
-  makes a project automatically deliverable.
+- `independent_auto` (the default for new projects): the project closes from acceptance that
+  was **actually executed on the frozen revision**. On the default backend that execution is the
+  host verifier; nothing about it is taken from a claim. No owner comment, no hand-edited receipt
+  and no script for the user to run.
+- `human_review`: a real human review record is required. An automatic run can never
+  manufacture one, and an undeclared policy means `human_review` — silence never makes a
+  project automatically deliverable.
+
+The default path, end to end:
+
+```
+record the requirement (delivery_iteration action=open)
+  → freeze the standard once, before implementing (delivery_verify_independent freeze_standard: true)
+  → implement
+  → the host executes the frozen acceptance (delivery_verify_independent)
+  → on FAIL: read the gate and the Required case it names, fix, run it again
+  → on PASS: the delivery is Delivered; record it and close the iteration
+```
+
+Never ask the user an ordinary technical question inside that loop: a failing gate is your
+problem to diagnose and fix, not a decision for them.
 
 Ask the user only when the decision is genuinely theirs: a substantive product trade-off
 (changing an observable result, a Critical rule's subject/resource/operation, or in/out of
 scope), a new permission, cost, or a destructive or irreversible operation. Ordinary HOW
-decisions, added tests inside the agreed semantics, and automatic promotion are not brought
-to the user each time; changing a product result, deleting an obligation or lowering a
-standard always is.
+decisions, added tests inside agreed semantics and automatic promotion are yours to make.
 
-When something cannot be verified automatically, report it as a **limitation** in the
-delivery result (for example subjective usability). A limitation is not a pass and is never
-quietly dropped.
+When acceptance cannot be automated, say so as a **limitation** in the delivery report
+(for example subjective usability). A limitation is not a pass, and it is never quietly
+dropped.
 
 ## The five phases
 
@@ -94,18 +140,41 @@ attempt budget, and any migration or external side effect.
 
 Check: `delivery_gaps` with `phase=slice`.
 
-### 4. Verify on a fixed candidate
+### 4. Freeze the standard, then verify on a fixed candidate
+
+Freeze once, **before implementing**, and commit it:
 
 ```
-node packages/delivery-assured/scripts/verify.mjs --local --slice <id>
+node packages/delivery-assured/scripts/verify.mjs --project <project> --freeze-standard
+```
+
+That records the SHA-256 of every protected standard file (Contract, project config,
+acceptance manifest and specs, verifier config, Slices) together with the revision those
+bytes are committed at. Verification then compares every byte; a Required case cannot be
+rewritten, added or removed after freeze without the run refusing `STANDARD_DRIFT`, and a
+re-freeze is auditable (`--allow-standard-change` records the previous standard id).
+
+For diagnosis:
+
+```
+node packages/delivery-assured/scripts/verify.mjs --project <project> --local --slice <id>
+```
+
+For the run that actually completes the delivery (the default completion path):
+
+```
+node packages/delivery-assured/scripts/verify.mjs --project <project> --backend host --write-evidence --slice <id>
 ```
 
 Six gates: build, clean boot, persistence/migration, Slice acceptance, regression Spine,
-deployment. A gate declared `excluded` must carry a reason. Zero tests, a missing case, a
-skip, an accidental filter and a timeout are never a pass.
+deployment. The four executable gates must really run on the host backend; only a gate the
+frozen verifier config marks CI-only may be `not_applicable`, and it must say why. Zero
+tests, a missing case, a skip, an accidental filter and a timeout are never a pass. The
+record states positively what this backend could **not** observe (a packaged deployment,
+runtime isolation) instead of claiming it.
 
-The Spine only grows: every verified critical case is re-run on later candidates, and
-removing one needs the owner's confirmation.
+The Spine only grows: a passing run accumulates every case it verified, and a later candidate
+re-runs them all. Dropping one fails the run.
 
 ### 5. Stop non-convergent patching
 
@@ -135,28 +204,32 @@ the acceptance, refresh Coverage and re-verify in full.
 ## What you must not claim
 
 Do not report a Slice as done because the local gates are green, and do not report the
-product as `MVP_READY` unless the whole Contract's Required results are implemented and
-mapped, every machine acceptance and the full Spine pass on the frozen revision, the
-explicitly approved environment runs that same candidate and image, the declared completion
-rule is actually satisfied, and the declared release prerequisites were observed on the
-platform. Temporary CI installation reports are historical observations, not proof of an
-instance still running.
-
-Report what is still owed, what blocked, and how much budget is left — including whatever
-could not be verified automatically. Never widen the claimed scope.
+product as delivered unless the recomputed verdict says `Delivered`: the frozen Required set
+plus the accumulated Spine actually executed and passed on this exact candidate revision, from
+a verification backend this project accepts. Report what is still owed, what blocked, and how
+much budget is left — including the parts that could not be verified automatically. Never
+widen the claimed scope, and never present a limitation as a pass.
 
 ## The automatic loop in a session
 
-1. `delivery_iteration` with `action=open` records the user requirement verbatim; re-read it
-   with `action=status` before planning so the requirement survives the session.
-2. `delivery_gaps`, `delivery_coverage`, `delivery_resume` and `delivery_attempts` say what is
-   owed, what is stale and how much budget is left. Recompute; never restate from memory.
-3. Implement, then verify locally for diagnosis (`delivery_verify_local`).
-4. `delivery_ci` with `action=request` asks the platform to run the frozen verification on the
-   exact candidate; `action=observe` reports that run and its jobs. A requested or completed
-   run is still not a promotion, and an ambiguous dispatch is never retried blindly.
-5. On a real failure: diagnose it, record the falsified assumption with `action=note` (or a
+1. `delivery_iteration` with `action=open` records the user's requirement verbatim. Opening needs
+   no existing iteration — a first requirement and the round after a delivered one both start from
+   the journal — and `action=status` re-reads it before planning, from the same authoritative state
+   `delivery_resume` reads, so the requirement and the budget survive the session.
+2. `delivery_gaps` / `delivery_coverage` / `delivery_resume` / `delivery_attempts` tell you
+   what is owed, what is stale and how much budget is left. Recompute; never restate from memory.
+3. Freeze the standard once (`delivery_verify_independent` with `freeze_standard: true`) before
+   implementing, then implement.
+4. Have the host execute the frozen acceptance: `delivery_verify_independent`. It reports the
+   gates, the Required cases and the retained run log, and it writes Evidence on the default
+   path. A failure names the gate or case to fix; fix it and run it again. Do not ask the user.
+5. Optional high assurance: if this project has a protected CI workflow, `delivery_ci` with
+   `action=request` asks the platform to run the frozen verification on the exact candidate and
+   `action=observe` reports the run and its jobs. It is not required to finish, and a requested
+   or completed run is still not a promotion by itself.
+6. On a real failure, diagnose it, record the falsified assumption with `action=note` (or a
    Replan Record when the approach must change), then form the next candidate. On a genuine
-   blocker, record `action=blocked` with the concrete condition and report what is needed.
-6. When everything the Contract requires has passed and the prerequisites were observed, ask
-   the promotion workflow to close the delivery, then record the outcome with `action=close`.
+   blocker, record it with `action=blocked` and report exactly what is needed.
+7. When the verdict is `Delivered`, record the outcome with `action=verified` and close the
+   iteration with `action=close`. Closing recomputes the verdict and is refused until it is
+   `Delivered`; it never creates the outcome.

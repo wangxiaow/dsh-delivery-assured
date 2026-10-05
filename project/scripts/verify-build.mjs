@@ -78,6 +78,10 @@ if (yamlTests.status !== 0) {
 const pluginRoot = join(repoRoot, 'plugins', 'dsh-delivery-assured')
 const pluginTests = [
   { label: 'plugin smoke', file: join(pluginRoot, 'test', 'smoke.mjs'), requires: 'none' },
+  // The bootstrap lifecycle is what makes a genuinely new project deliverable: an ordered,
+  // scoped window instead of "no Contract, so the guard is off". Its regression values are
+  // the ones a real greenfield session produced, so it runs without the host.
+  { label: 'plugin bootstrap lifecycle', file: join(pluginRoot, 'test', 'bootstrap-lifecycle.test.mjs'), requires: 'none' },
   { label: 'plugin skill-registry contract', file: join(pluginRoot, 'test', 'skill-registry.test.mjs'), requires: 'dsh-packages' },
   // This is the only suite that can catch "the plugin no longer loads". The other two
   // use their own tool builder and shell double, so they once passed while the plugin
@@ -116,10 +120,21 @@ const dshPackagesPresent = existsSync(join(dshHome, 'profiles', 'node_modules', 
 // Electron binary, so the installation itself is what makes the runtime reachable.
 const desktopRuntimePresent = existsSync('D:/Program Files/DeepSeek Harness/DeepSeek Harness.exe')
 const dshRuntimePresent = dshPackagesPresent || desktopRuntimePresent
+/**
+ * Report a suite that did NOT run. A plain note is invisible in a green CI run,
+ * so under GitHub Actions every skip also becomes a `::warning` annotation on the
+ * run summary: "CI green" must never read as "every gate ran".
+ */
+function noteSkipped(message) {
+  notes.push(`suite skipped: ${message}`)
+  if (process.env.GITHUB_ACTIONS === 'true') {
+    process.stdout.write(`::warning ::suite skipped (not run): ${message}\n`)
+  }
+}
+
+const skippedSuites = []
 if (!existsSync(pluginRoot)) {
-  notes.push(
-    `the dsh-delivery-assured plugin is not present at ${pluginRoot}; its suites were NOT RUN in this checkout`,
-  )
+  noteSkipped(`the dsh-delivery-assured plugin is not present at ${pluginRoot}; its suites were NOT RUN in this checkout`)
 } else {
   for (const test of pluginTests) {
     if (!existsSync(test.file)) {
@@ -127,13 +142,13 @@ if (!existsSync(pluginRoot)) {
       continue
     }
     if (test.requires === 'dsh-packages' && !dshPackagesPresent) {
-      notes.push(`${test.label} was NOT RUN: no DSH packages under $DSH_HOME/profiles/node_modules`)
+      noteSkipped(`${test.label} requires DSH packages and no packages exist under $DSH_HOME/profiles/node_modules`)
+      skippedSuites.push(test.label)
       continue
     }
     if (test.requires === 'dsh-runtime' && !dshRuntimePresent) {
-      notes.push(
-        `${test.label} was NOT RUN: no DSH runtime found (no desktop installation and no $DSH_HOME palette of packages)`,
-      )
+      noteSkipped(`${test.label} requires a real DSH runtime and none was found (no desktop installation and no $DSH_HOME palette of packages)`)
+      skippedSuites.push(test.label)
       continue
     }
     const result = spawnSync(process.execPath, [test.file], { cwd: root, encoding: 'utf8' })
@@ -145,7 +160,7 @@ if (!existsSync(pluginRoot)) {
   }
 }
 
-for (const file of ['evidence.test.mjs', 'verification.test.mjs', 'convergence.test.mjs', 'completion.test.mjs', 'durable-state.test.mjs']) {
+for (const file of ['evidence.test.mjs', 'verification.test.mjs', 'convergence.test.mjs', 'completion.test.mjs', 'durable-state.test.mjs', 'durable-transport.test.mjs', 'state-view.test.mjs', 'capture-run.test.mjs', 'host-verification.test.mjs']) {
   const result = spawnSync(process.execPath, [join(packRoot, 'tests', file)], { cwd: root, encoding: 'utf8' })
   if (result.status !== 0) failures.push(`${file} failed: ${failureDetail(result)}`)
 }
@@ -183,5 +198,8 @@ if (failures.length > 0) {
   process.exit(1)
 }
 for (const note of notes) process.stdout.write(`note: ${note}\n`)
+if (skippedSuites.length > 0) {
+  process.stdout.write(`skipped suites (not run): ${skippedSuites.join(', ')}\n`)
+}
 process.stdout.write(`build ok: node ${process.versions.node}, no runtime dependencies, sources load\n`)
 process.exit(0)

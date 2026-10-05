@@ -22,4 +22,10 @@
 
 **Independent Auto Acceptance**：独立于实现者完成声明、实际执行既定标准并核验可运行结果的默认完成方式。不等于人工签收或无测试的自动放行。
 
+**Verification Backend**：实际执行冻结验收的那条通路。默认是 **Host-Executed Verification**（DSH/宿主自己逐门运行并保留记录与日志）；`trusted_ci`（受保护 CI 工作流、authority refs、push token、Baseline 晋升）是可选的高保障后端，不再是普通项目的默认完成前提。两者都不降低 acceptance：Required 不得跳过，记录必须由该后端的实际执行产生。
+
+**Frozen Standard**：冻结时刻受保护标准文件（Contract、项目配置、验收 manifest 与 spec、verifier 配置、Slice）的逐字节摘要，加上这些字节所属的提交 revision。Host-Executed Verification 用它代替受保护 `standards/acceptance` ref：冻结后任何改动都会让验证以 `STANDARD_DRIFT` 拒绝。
+
+**Delivered**：由证据算出的终态，不是声明。它成立的条件是：本项目的验证后端在**当前精确候选**上实际执行了冻结 Required 集合与累积 Spine 且全部通过，没有 Critical 欠账，预算未耗尽。Baseline 晋升不是它的前提。
+
 **Human Review**：由用户主动选择、需要真实人类评审记录的完成模式。自动验收不能冒充这种记录。

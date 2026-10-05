@@ -12,7 +12,9 @@
  * that actually executed, and a case with no unique PASS in the exact run blocks.
  */
 
-import { isPlaceholder } from './model.mjs'
+import { classifyEvidence, isPlaceholder } from './model.mjs'
+import { blockingForView, collectCriticalViolations, coverageRows } from './coverage-core.mjs'
+import { VERIFICATION_BACKEND, issuerAssurance } from './verification.mjs'
 
 export const COMPLETION_MODES = ['independent_auto', 'human_review']
 
@@ -139,4 +141,94 @@ export function assessAutomatedReviews(model, record, { sourceReference = null }
   })
   for (const review of reviews) for (const problem of review.problems || []) blocking.push(`${review.review_id || '(unnamed review)'}: ${problem}`)
   return { blocking, reviews }
+}
+
+/* -------------------------------------------------------------- delivered */
+
+/**
+ * The best independent execution that proves the current candidate.
+ *
+ * "Best" is ordered by assurance (a trusted-CI record outranks a host-executed one),
+ * then by when it finished. Only fresh records qualify: a record bound to another
+ * revision, another standard or an incomplete Required set is not a pass, so it can
+ * never be selected here.
+ */
+export function independentVerification(model, { candidate, parentBaseline = null, acceptedIssuers = null, trustedIssuer = null, verification = null } = {}) {
+  let best = null
+  for (const record of model.evidence || []) {
+    const classified = classifyEvidence(record, { model, codeRevision: candidate, parentBaseline, acceptedIssuers, trustedIssuer })
+    if (!classified.fresh) continue
+    if (record.execution?.result !== 'PASS') continue
+    const assurance = verification ? issuerAssurance(record.issuer?.identity, verification) : 1
+    const at = Date.parse(record.execution?.finished_at) || 0
+    const rank = [assurance, at]
+    if (!best || rank[0] > best.rank[0] || (rank[0] === best.rank[0] && rank[1] > best.rank[1])) {
+      best = { rank, record, classified, assurance, at }
+    }
+  }
+  if (!best) return null
+  const x = best.record.execution || {}
+  const e = best.record.environment || {}
+  return {
+    evidence_id: best.record.evidence_id,
+    issuer: best.record.issuer?.identity ?? null,
+    assurance: best.assurance,
+    backend: e.kind === 'host_independent' ? VERIFICATION_BACKEND.HOST : VERIFICATION_BACKEND.TRUSTED_CI,
+    finished_at: x.finished_at || null,
+    required_cases: x.required_cases ?? null,
+    executed_cases: x.executed_cases ?? null,
+    skipped_required_cases: x.skipped_required_cases ?? null,
+    deployment_observed: Boolean(e.deployment_id || e.deployed_code_revision),
+    run_log: x.run_log || null,
+    standards: best.record.standards || null,
+    // The caller may show the raw record; nothing here is recomputed from a claim.
+    record: best.record,
+  }
+}
+
+/**
+ * The one delivery verdict.
+ *
+ * `Delivered` is computed, never declared: it holds only when the Contract's remaining
+ * obligations are all proved by a fresh execution of the frozen Required set on this
+ * exact candidate, no Critical rule lacks a current pass, and the budget is not
+ * exhausted. The backend is named, and the observations that backend could not make
+ * (a packaged deployment, runtime isolation) are reported as limitations of the
+ * verdict rather than folded into it.
+ */
+export function assessDelivery(model, { candidate, parentBaseline = null, acceptedIssuers = null, trustedIssuer = null, verification = null, budget = null } = {}) {
+  const { buckets } = coverageRows(model, { candidate, parentBaseline, trustedIssuer, acceptedIssuers })
+  const critical = collectCriticalViolations(model, { codeRevision: candidate, parentBaseline, trustedIssuer, acceptedIssuers })
+  const blockingObligations = blockingForView(buckets, 'mvp')
+  const record = independentVerification(model, { candidate, parentBaseline, acceptedIssuers, trustedIssuer, verification })
+  const blocking = []
+  if (blockingObligations.length > 0) {
+    blocking.push(`${blockingObligations.length} required obligation(s) are not proved on this candidate: ${blockingObligations.slice(0, 8).join(', ')}`)
+  }
+  for (const violation of critical) blocking.push(`Critical ${violation.rule}: ${violation.message}`)
+  if (!record) {
+    blocking.push(
+      'no fresh independent execution of the frozen Required set covers this exact candidate; ' +
+        'a declaration, a local diagnostic or a record bound to another revision is not a pass',
+    )
+  }
+  if (budget?.budget_blocked === true) blocking.push('the attempt budget is exhausted; this needs an explicit budget or scope decision')
+  const limitations = []
+  if (record && record.backend === VERIFICATION_BACKEND.HOST) {
+    limitations.push('the record was produced by the host-executed verifier: no packaged deployment or runtime isolation was observed')
+  }
+  return {
+    delivered: blocking.length === 0,
+    completion_mode: resolveCompletionPolicy(model.contract).mode,
+    backend: record?.backend ?? (verification?.backend ?? null),
+    candidate: candidate ?? null,
+    verification: record,
+    owed: {
+      blocking_obligations: blockingObligations,
+      critical: critical.map((entry) => `${entry.rule}${entry.case_id ? `/${entry.case_id}` : ''}`),
+      verified: buckets.verified,
+    },
+    blocking,
+    limitations,
+  }
 }

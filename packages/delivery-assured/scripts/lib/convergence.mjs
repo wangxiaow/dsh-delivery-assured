@@ -2,6 +2,7 @@ import { existsSync } from 'node:fs'
 import { InputError, abs, gitRevision, sha256 } from './common.mjs'
 import { classifyEvidence, caseOutcomeFromEvidence } from './model.mjs'
 import { requiredCaseIds } from './selection.mjs'
+import { resolveVerification } from './verification.mjs'
 
 const RESULTS = new Set(['passed', 'failed', 'blocked', 'infra_aborted'])
 const FIELDS = new Set(['attempt_id', 'slice_id', 'slice_key', 'at', 'root_cause_key', 'hypothesis', 'result', 'required_passed', 'required_total', 'spine_failures', 'critical_violations', 'ci_ref', 'note', 'standard_digest', 'comparison_digest', 'spine_digest', 'required_case_ids', 'case_set_digest', 'comparison_approval_ref', 'replan'])
@@ -95,9 +96,19 @@ export function validateAttempt(entry, model) {
   return problems
 }
 
-export function attemptFromCI(record, model, metadata = {}) {
+export function attemptFromCI(record, model, metadata = {}, { acceptedIssuers = null } = {}) {
   if (!record || record.__invalid || !text(record.evidence_id)) throw new InputError('invalid CI record')
-  if (!text(model.cfg.ci?.trusted_issuer) || record.issuer?.identity !== model.cfg.ci.trusted_issuer) throw new InputError('CI issuer is not trusted')
+  // Which issuer identities this project treats as proof. The default is the trusted CI
+  // issuer, so every existing caller keeps its exact rule; a caller that resolved the
+  // project's verification policy passes the accepted set (host backend included).
+  const accepted = Array.isArray(acceptedIssuers) && acceptedIssuers.length > 0
+    ? acceptedIssuers
+    : text(model.cfg.ci?.trusted_issuer)
+      ? [model.cfg.ci.trusted_issuer]
+      : []
+  if (accepted.length === 0 || !accepted.includes(record.issuer?.identity)) {
+    throw new InputError(`record issuer ${JSON.stringify(record.issuer?.identity ?? null)} is not one of this project's verification issuers`)
+  }
   if (record.convergence !== undefined && (!record.convergence || typeof record.convergence !== 'object' || Array.isArray(record.convergence))) throw new InputError('invalid CI convergence metadata')
   for (const field of Object.keys(record.convergence || {})) if (!['attempt_id', 'slice_key', 'root_cause_key', 'hypothesis', 'note', 'comparison_approval_ref'].includes(field)) throw new InputError(`unknown CI convergence field ${field}`)
   for (const field of ['attempt_id', 'slice_key', 'root_cause_key', 'hypothesis', 'comparison_approval_ref']) {
@@ -141,7 +152,8 @@ export function attemptFromCI(record, model, metadata = {}) {
 }
 
 export function criticalOpenFromModel(model, options = {}) {
-  const context = { model, codeRevision: options.candidate ?? gitRevision(model.root, 'HEAD'), parentBaseline: options.parentBaseline ?? model.baselines?.at(-1)?.baseline_id ?? null, trustedIssuer: model.cfg.ci?.trusted_issuer }
+  const acceptedIssuers = options.acceptedIssuers || resolveVerification(model.cfg).acceptedIssuers
+  const context = { model, codeRevision: options.candidate ?? gitRevision(model.root, 'HEAD'), parentBaseline: options.parentBaseline ?? model.baselines?.at(-1)?.baseline_id ?? null, acceptedIssuers }
   const open = []
   const selected = options.slice ? requiredCaseIds(model, options.slice) : null
   const surface = options.slice ? resolveSlice(model, options.slice).slice.obligations || [] : null
@@ -152,13 +164,13 @@ export function criticalOpenFromModel(model, options = {}) {
     if (!cases.length) open.push(`${rule.id}: no acceptance case`)
     for (const c of cases) {
       const proof = caseOutcomeFromEvidence(model.evidence || [], c.id, context)
-      if (!context.trustedIssuer || !context.codeRevision || !proof?.fresh || proof.outcome !== 'passed') open.push(`${rule.id}/${c.id}: no current trusted pass`)
+      if (acceptedIssuers.length === 0 || !context.codeRevision || !proof?.fresh || proof.outcome !== 'passed') open.push(`${rule.id}/${c.id}: no current pass from the project's verification backend`)
     }
   }
   return open
 }
 
-export function computeConvergence(model, { slice = null, logExists = model.attemptsLog?.exists ?? existsSync(abs(model.root, model.cfg.paths.attemptsLog)), candidate, parentBaseline } = {}) {
+export function computeConvergence(model, { slice = null, logExists = model.attemptsLog?.exists ?? existsSync(abs(model.root, model.cfg.paths.attemptsLog)), candidate, parentBaseline, acceptedIssuers: accepted = null } = {}) {
   const limits = model.cfg.budget
   const invalid = []
   for (const k of ['total_attempt_limit', 'same_root_cause_limit', 'no_progress_window', 'replan_limit']) if (!integer(limits[k]) || (k !== 'replan_limit' && limits[k] === 0)) invalid.push({ line: 0, message: `invalid budget ${k}` })
@@ -166,10 +178,11 @@ export function computeConvergence(model, { slice = null, logExists = model.atte
   let key = null
   if (slice) key = resolveSlice(model, slice).slice_key
   const entries = [...(model.attempts || [])]
+  const acceptedForBudget = Array.isArray(accepted) && accepted.length > 0 ? accepted : resolveVerification(model.cfg).acceptedIssuers
   for (const record of model.evidence || []) {
     const index = entries.findIndex((e) => e?.ci_ref === record.evidence_id)
     try {
-      const derived = attemptFromCI(record, model, index >= 0 ? entries[index] : {})
+      const derived = attemptFromCI(record, model, index >= 0 ? entries[index] : {}, { acceptedIssuers: acceptedForBudget })
       if (index >= 0) {
         const original = entries[index]
         const errors = validateAttempt(original, model)
@@ -283,7 +296,8 @@ export function computeConvergence(model, { slice = null, logExists = model.atte
   const revision = candidate || gitRevision(model.root, 'HEAD')
   const currentPass = (entry) => {
     const proof = model.evidence?.find((r) => r.evidence_id === entry.ci_ref)
-    return Boolean(entry.result === 'passed' && sameStandard(entry, fixedByKey.get(entry.slice_key)) && proof && model.cfg.ci?.trusted_issuer && revision && classifyEvidence(proof, { model, codeRevision: revision, parentBaseline: parentBaseline ?? model.baselines?.at(-1)?.baseline_id ?? null, trustedIssuer: model.cfg.ci.trusted_issuer }).fresh)
+    const acceptedIssuers = accepted || resolveVerification(model.cfg).acceptedIssuers
+    return Boolean(entry.result === 'passed' && sameStandard(entry, fixedByKey.get(entry.slice_key)) && proof && acceptedIssuers.length > 0 && revision && classifyEvidence(proof, { model, codeRevision: revision, parentBaseline: parentBaseline ?? model.baselines?.at(-1)?.baseline_id ?? null, acceptedIssuers }).fresh)
   }
   const terminalPassed = Boolean(last && [...previousByKey.values()].every(currentPass))
   const oscillating = attempts.slice(-4).filter((a) => a.result !== 'passed').map((a) => a.root_cause_key)
@@ -292,7 +306,7 @@ export function computeConvergence(model, { slice = null, logExists = model.atte
   const budgetBlocked = attempts.length > limits.total_attempt_limit || replans > limits.replan_limit || (exhausted && !terminalPassed)
   const replanAcknowledged = Boolean(last && selected.some((e) => e.replan && e.slice_key === last.slice_key && Date.parse(e.at) >= Date.parse(last.at)))
   const requiresReplan = !terminalPassed && !replanAcknowledged && (maxSameRootCause >= limits.same_root_cause_limit || noProgressStreak >= limits.no_progress_window || oscillation.oscillating)
-  const criticalOpen = criticalOpenFromModel(model, { candidate, parentBaseline, slice })
+  const criticalOpen = criticalOpenFromModel(model, { candidate, parentBaseline, slice, acceptedIssuers: accepted })
   const blocked = invalid.length > 0 || budgetBlocked || requiresReplan || criticalOpen.length > 0
   const fixedComparison = Object.fromEntries([...fixedByKey].map(([k, a]) => [k, { standard_digest: a.standard_digest, case_set_digest: set(a), required_total: a.required_total }]))
   const changedComparison = attempts.filter((a) => !sameStandard(a, fixedByKey.get(a.slice_key))).map((a) => a.attempt_id)

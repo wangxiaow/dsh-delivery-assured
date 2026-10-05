@@ -8,7 +8,7 @@
  */
 
 import { existsSync, readFileSync } from 'node:fs'
-import { validateEvidenceRecord, preferProof } from './evidence.mjs'
+import { validateEvidenceRecord, validateEvidenceRecordFor, preferProof } from './evidence.mjs'
 import { requiredCaseIds } from './selection.mjs'
 import {
   abs,
@@ -701,14 +701,20 @@ export const STALE_REASONS = {
  * Promotion job) may pass `attested: true`; local readers leave it false and say
  * so, which is why a local "verified" row is never a completion credential.
  */
-export function classifyEvidence(record, { model, codeRevision, parentBaseline, trustedIssuer, attested = false }) {
+export function classifyEvidence(record, { model, codeRevision, parentBaseline, trustedIssuer, acceptedIssuers = null, attested = false }) {
   if (record.__invalid || !record.evidence_id) {
     return { fresh: false, current: false, reasons: ['evidence file is not a valid record'], record }
   }
   const bindingReasons = []
   const b = record.bindings || {}
   const current = model.currentBindings || {}
-  if (!trustedIssuer || record.issuer?.identity !== trustedIssuer) {
+  // Which issuer identities this project treats as proof. `acceptedIssuers` is the
+  // resolved policy (default backend first, trusted CI second when configured); the
+  // single `trustedIssuer` form is kept for callers that only know the CI issuer.
+  const accepted = Array.isArray(acceptedIssuers) && acceptedIssuers.length > 0
+    ? acceptedIssuers
+    : (trustedIssuer ? [trustedIssuer] : [])
+  if (accepted.length === 0 || !accepted.includes(record.issuer?.identity)) {
     bindingReasons.push(STALE_REASONS.issuer)
   }
   if (!codeRevision || b.code_revision !== codeRevision) bindingReasons.push(STALE_REASONS.code)
@@ -727,16 +733,41 @@ export function classifyEvidence(record, { model, codeRevision, parentBaseline, 
     && promoted.verification_scope?.spine_manifest_digest === b.spine_manifest_digest
     && JSON.stringify([...(promoted.accumulated_spine_case_ids || [])].sort()) === JSON.stringify([...(model.spine?.caseIds || [])].sort())
     && (model.spine?.caseIds || []).every(id => record.execution?.case_results?.some(r => r.case_id === id && r.outcome === 'passed'))
+  // The host backend has no Promotion job, so the record that a passing host run
+  // writes is also the record that grows the accumulated Spine. Its own spine digest is
+  // therefore the *previous* one; recognising that is not staleness. It is recognised
+  // only when the spine this record says it produced is exactly the Spine the model
+  // now holds and every one of those cases really passed in the record — a record from
+  // before a later growth stays stale.
+  const producedSpine = record.execution?.spine
+  const hostSpine = producedSpine && Array.isArray(producedSpine.after)
+    && JSON.stringify([...producedSpine.after].sort()) === JSON.stringify([...(model.spine?.caseIds || [])].sort())
+    && producedSpine.after.every(id => record.execution?.case_results?.some(r => r.case_id === id && r.outcome === 'passed'))
+    && producedSpine.before_digest === b.spine_manifest_digest
   for (const [key, reason] of Object.entries(fields)) {
-    if (key === 'spine_manifest_digest' && promotedSpine) continue
+    if (key === 'spine_manifest_digest' && (promotedSpine || hostSpine)) continue
     if (!Object.hasOwn(b, key) || b[key] !== current[key]) bindingReasons.push(`${reason} (${key})`)
   }
   const boundParent = promoted?.baseline_id === parentBaseline ? promoted.parent_baseline : parentBaseline
   if (boundParent !== undefined && b.parent_baseline !== boundParent) bindingReasons.push(STALE_REASONS.parent)
-  const integrity = validateEvidenceRecord(record)
+  const integrity = validateEvidenceRecordFor(record)
   try {
-    const expected = requiredCaseIds(model, record.scope?.slice_id === 'MVP' ? null : record.scope?.slice_id)
-    if (JSON.stringify(expected) !== JSON.stringify([...(record.scope?.required_case_ids || [])].sort())) integrity.push('Required scope differs from the frozen Slice and Spine')
+    const scopeSlice = record.scope?.slice_id === 'MVP' ? null : record.scope?.slice_id
+    const recorded = [...(record.scope?.required_case_ids || [])].sort()
+    const expected = requiredCaseIds(model, scopeSlice)
+    if (JSON.stringify(expected) !== JSON.stringify(recorded)) {
+      // A host-executed PASS grows the accumulated Spine itself, so its Required set is
+      // the one that held *before* that growth. Judge it against the Spine it recorded
+      // rather than the one it produced; a record from an earlier candidate is still
+      // rejected because later growth makes `before` differ from both.
+      const spineBefore = record.execution?.spine?.before
+      const expectedBefore = Array.isArray(spineBefore)
+        ? requiredCaseIds({ ...model, spine: { ...model.spine, caseIds: spineBefore } }, scopeSlice)
+        : null
+      if (!expectedBefore || JSON.stringify(expectedBefore) !== JSON.stringify(recorded)) {
+        integrity.push('Required scope differs from the frozen Slice and Spine')
+      }
+    }
   } catch (error) { integrity.push(`invalid frozen scope: ${error.message}`) }
   // A failed run can be current without ever being a valid passing record.
   const reasons = [...bindingReasons, ...integrity]

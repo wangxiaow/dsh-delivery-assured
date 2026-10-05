@@ -14,7 +14,7 @@
 [![CI](https://github.com/wangxiaow/dsh-delivery-assured/actions/workflows/verify.yml/badge.svg)](https://github.com/wangxiaow/dsh-delivery-assured/actions/workflows/verify.yml)
 [![Implementation](https://img.shields.io/badge/implementation-v0.5-blueviolet.svg)](README.md)
 
-开发状态：默认完成规则已按本次纠偏改为**独立自动验收**（`independent_auto`，见 [ADR-0001](docs/adr/0001-default-independent-auto-delivery.md) 与[自动交付说明](docs/AUTO_DELIVERY.md)）。平台侧已实测：`refs/heads/baseline/main` 由真实 CI 晋升到 **BL-001**（`038cb0ae`），4 次 Candidate attempt 与 1 次 Replan 保留在 `delivery-state/main`；`main` 已启用 `structural checks` + `verify candidate` 两项必需检查（`strict`、`enforce_admins`，禁强推/删除）。**尚未完成的部分**：S2（本次纠偏引入的义务与验收）还没有一次被落账的候选验证，也还没有一次不带 owner 回执的自动终局，所以不宣称 `MVP_READY`；插件只在独立 profile `delivery-verify` 中实测组合成功，用户在用的 `desktop` profile 未挂载它，因此**桌面会话当前拿不到 `delivery_*` 工具**；运行时隔离仍未实现，只作为 Baseline 元数据告警记录。另外 `host` 相关套件需要 DSH 侧包才会运行，没有 DSH 包的 CI 环境会跳过它们，所以“CI 绿”不等于这些套件通过。本地测试通过非完成。
+开发状态：默认完成规则已按本次纠偏改为**独立自动验收**（`independent_auto`，见 [ADR-0001](docs/adr/0001-default-independent-auto-delivery.md) 与[自动交付说明](docs/AUTO_DELIVERY.md)）。平台侧已实测：`refs/heads/baseline/main` 由真实 CI 晋升到 **BL-003**（`fd575a5`），7 次 Candidate attempt 与 1 次 Replan 保留在 `delivery-state/main`（`4c40c80f`）；`main` 已启用 `structural checks` + `verify candidate` 两项必需检查（`strict`、`enforce_admins`，禁强推/删除）。**会话侧已实测可用**：独立 profile `delivery-auto`（插件 junction 指向当前工作树）+ 应用自带运行时 0.2.0-rc.2 的真实 headless 会话里，7 个 `delivery_*` 工具全部可见并被真实调用，`delivery_resume`、`delivery_iteration(action=status)` 与 Global Kernel 从同一权威状态得出同一预算（`tools/dsh-session-probe.mjs`；在 `fd575a5` 的干净检出上是 `18 verified, 0 owed`，预算 7/8、Replan 1/2）；权威状态不可读时命令**明确失败**，不会退回工作树读数冒充恢复结果。**尚未完成的部分**：用户在用的 `desktop` profile 未挂载插件，所以**桌面会话当前拿不到 `delivery_*` 工具**；运行时隔离仍未实现，只作为 Baseline 元数据告警记录。另外 `host` 相关套件需要 DSH 侧包才会运行，没有 DSH 包的 CI 环境会跳过它们，所以“CI 绿”不等于这些套件通过。本地测试通过非完成。
 
 </div>
 
@@ -229,7 +229,7 @@ secrets 是否存在。那些只有真实推送才能验证。
 | 尝试预算 | `same_root_cause_limit: 3`、`total_attempt_limit: 8`、`no_progress_window: 3`、`replan_limit: 2`；成功执行留在历史里但不计入同根因失败 |
 | 退出码 | `0` 通过、`1` 阻塞/失败、`2` 输入或工具错误 |
 | 完成规则 | Contract 的 `completion_policy`：默认 `independent_auto`（实际执行 + 平台观测判定，无需人工签收）；未声明按 `human_review` 处理；人工 Review 是用户主动选择的模式 |
-| DSH 入口 | `delivery_iteration`（追加式迭代日志/恢复）、`delivery_ci`（按明确输入派发并观测 CI），加上原有五个只读诊断工具 |
+| DSH 入口 | `delivery_iteration`（追加式迭代日志/恢复，`action=open` 无需已有 iteration）、`delivery_ci`（按每个 action 自己的输入派发并观测 CI，派发必须唯一归因到一个新 run，否则明确 `ambiguous`），加上原有五个只读诊断工具 |
 
 ## 贡献
 

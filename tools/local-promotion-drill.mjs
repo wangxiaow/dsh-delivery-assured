@@ -56,12 +56,20 @@ try {
   check(observed.status === 1 && JSON.parse(observed.stdout).report_kind === 'local_diagnostic', 'packaged CLI performs a real diagnostic, not just a help stub')
   check(!/DSH_DEPLOYED_CODE_REVISION=|DSH_DEPLOYMENT_ID=/.test(artifact.text), 'packaging does not invent deployment observations')
   const model = loadModel(project)
-  const cases = model.acceptance.cases.filter(c => c.required && c.method === 'automated').map(c => c.id)
+  // The fixture finalization covers the WHOLE Contract the way the real MVP flow
+  // does: "MVP" scope means the frozen set required by the Contract plus the Spine
+  // (never a partial Sub-selection), and the obligation surface is every declared
+  // obligation. Partial Slice scopes are promoted through promote-baseline with
+  // their own Slice id; this drill's single promotion is the finalization.
+  const cases = [...new Set([
+    ...model.acceptance.cases.filter(c => c.required && c.method === 'automated').map(c => c.id),
+    ...model.spine.caseIds,
+  ])].sort()
   const evidence = {
     evidence_id: 'ci:verify:fixture-1', issuer: { identity: 'ci:verify' },
     trust: { transport_verified: true, runtime_isolation_verified: true },
-    convergence: { slice_key: 'S1', root_cause_key: 'fixture-fixed-candidate', hypothesis: 'Fixture candidate satisfies the frozen Required set' },
-    scope: { slice_id: 'S1', obligation_ids: [...model.obligations.keys()], required_case_ids: cases },
+    convergence: { slice_key: 'MVP', root_cause_key: 'fixture-fixed-candidate', hypothesis: 'Fixture candidate satisfies the frozen Required set' },
+    scope: { slice_id: 'MVP', obligation_ids: [...model.obligations.keys()], required_case_ids: cases },
     bindings: { ...model.currentBindings, code_revision: candidate, contract_revision: candidate, acceptance_revision: candidate, verifier_config_revision: candidate, parent_baseline: null },
     environment: { kind: 'production_like_ci', image_digest: `sha256:${artifactManifest.digest}`, deployed_image_digest: `sha256:${artifactManifest.digest}`, config_fingerprint: model.currentBindings.verifier_config_digest, fixture_revision: candidate, deployment_id: 'fixture-deployment', deployed_code_revision: candidate },
     execution: { ci_run_id: 'fixture-1', started_at: '2026-01-01T00:00:00Z', finished_at: '2026-01-01T00:00:01Z', result: 'PASS', required_cases: cases.length, executed_cases: cases.length, skipped_required_cases: 0, case_results: cases.map(case_id => ({ case_id, outcome: 'passed' })), gate_results: ['build', 'clean_boot', 'persistence_migration', 'slice_acceptance', 'regression_spine', 'deployment'].map(gate => ({ gate, outcome: 'passed', exit_code: 0 })), artifacts: ['acceptance-results.json'] },

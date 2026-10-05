@@ -23,20 +23,27 @@
 |---|---|
 | `delivery_gaps` | 某一阶段的结构缺口：未处置的清单项、未映射的义务、未解决的 unknown、缺负向验收的 Critical 规则、Contract 里残留的占位符 |
 | `delivery_coverage` | 重算出的 `义务 → Slice → 验收 → 证据` 映射，`mvp` 或 `slice` 两种视图 |
-| `delivery_resume` | 可信起点、还欠什么、最后一次失败、剩余预算、下一项验证 |
+| `delivery_resume` | 可信起点、还欠什么、最后一次失败、剩余预算、`Delivered` 判定、下一项验证 |
 | `delivery_attempts` | 尝试预算、同一标准与用例集上的进展、振荡判定、是否需要 Replan |
-| `delivery_verify_local` | 5+1 门，作为本地诊断 |
-| `delivery-assured`（Skill） | 工作流程：义务发现、三处人工触点、Slice 纪律、三问分流、停止规则 |
+| `delivery_verify_independent` | **默认完成路径**：宿主实际执行冻结验收（含冻结标准校验），写入 Evidence、运行日志与 receipt；FAIL 时点出具体门与 Required case |
+| `delivery_verify_local` | 5+1 门，作为本地诊断（不是证据） |
+| `delivery_ci` | 可选高保障后端：派发/观测受保护 CI 工作流（不持有 Baseline 凭据） |
+| `delivery_iteration` | 追加式迭代日志；`close` 只在重算出的 `Delivered` 判定成立时放行 |
+| `delivery-assured`（Skill） | 工作流程：义务发现、Slice 纪律、三问分流、停止规则、默认完成路径 |
 
 ## 它刻意不做什么
 
-这里**没有任何**工具会写 Evidence、推进 `refs/heads/baseline/*`、
-记录已批准的标准，或宣告 `MVP_READY`。这不是遗漏：
+它**不会**让会话自己宣告完成。完成由证据算出：
 
-- 只有受保护的 CI 验证 job 产出 `evidence.json`。
-- 只有 CI Promotion job 持有推进受保护 baseline 引用的凭据。
-- 会话结束、workflow 完成、模型回复 "DONE"，都不构成晋升。
-- `delivery_verify_local` 固定带 `--local`，会话内无法触达证据模式。
+- `delivery_iteration action=close` 先让操作包重算判定；不是 `Delivered` 就拒绝，**一行不写**。
+- 默认完成路径是**宿主自己实际执行**冻结验收：`delivery_verify_independent` 逐门真正运行，
+  Required 不能跳过、不能筛选，记录必须携带本次 run token、逐门退出码、保留日志摘要与 harness
+  结果摘要；手写一个 `PASS` 文件无法通过校验。
+- 按构造，工具无法选择 Required 集合、无法把失败标成通过：那些事实来自冻结 manifest、Slice 与
+  累积 Spine，并在记录写完后由独立的判定函数重算。
+- 只有受保护 CI 的 Promotion job 能推进 `refs/heads/baseline/*`；它是**可选的高保障后端**，
+  不是普通项目完成的前提。会话结束、workflow 完成、模型回复 "DONE" 都不构成完成。
+- `delivery_verify_local` 固定带 `--local`，永远不产出证据。
 
 插件自己的测试会断言**没有任何已注册工具名暗示写路径**。
 
@@ -46,8 +53,8 @@
 
 | 控制 | 机制 | 边界 |
 |---|---|---|
-| 受保护路径 guard | `ctx.tools.guard()`：对 `write`/`edit`/`str_replace_editor` 的目标路径与 shell 命令做**同步判定**，命中受保护标准（`.agent/CONTRACT.yaml`、`.agent/project.yaml`、`tests/acceptance/spec/**`、`ci/verifier.yaml`、`.agent/evidence/**`、`ci/evidence/**`、`ci/baseline/**`、`ci/recording/**`，以及仓库的 `.github/workflows/**`、`ci/tools/**`、`packages/delivery-assured/**`）或权威 ref（`refs/heads/baseline`、`refs/heads/delivery-state`、`refs/heads/standards`）就**拒绝**；拒绝是单调的，后续监听器无法翻回允许 | 只拒绝、不授予；`tests/acceptance/driver/**` 刻意不保护（它是 Candidate 的适配面）。它拦的是注册工具调用，不是任意代码执行——真正的信任仍在 CI |
-| Global Kernel | `ctx.systemPrompt.variable('delivery_kernel')` + 一个引用它的 prompt 段：每次请求都带上项目、候选、可信起点、还欠什么、Critical、预算、下一步，以及"本地不是凭证 + 不要写受保护路径"的铁律 | 内容由操作包自己的 `resume.mjs --offline` 渲染（同一套事实，不另建账本）；provider 是同步的，所以文本有缓存，未就绪时明确写"尚未就绪"而不是编一个摘要 |
+| 受保护路径 guard | `ctx.tools.guard()`：对 `write`/`edit`/`str_replace_editor` 的目标路径与 shell 命令做**同步判定**，命中受保护标准（`.agent/CONTRACT.yaml`、`.agent/project.yaml`、`.agent/standards/**`（冻结标准锚点）、`tests/acceptance/spec/**`、`ci/verifier.yaml`、`.agent/evidence/**`、`ci/evidence/**`、`ci/baseline/**`、`ci/recording/**`，以及仓库的 `.github/workflows/**`、`ci/tools/**`、`packages/delivery-assured/**`）或权威 ref（`refs/heads/baseline`、`refs/heads/delivery-state`、`refs/heads/standards`）就**拒绝**；拒绝是单调的，后续监听器无法翻回允许 | 只拒绝、不授予；`tests/acceptance/driver/**` 刻意不保护（它是 Candidate 的适配面）。它拦的是注册工具调用，不是任意代码执行——记录的可信性来自宿主验证路径自身的执行与冻结标准校验 |
+| Global Kernel | `ctx.systemPrompt.variable('delivery_kernel')` + 一个引用它的 prompt 段：每次请求都带上项目、候选、**验证后端与 accepted issuer**、`Delivered` 判定、**权威状态的读取结果**、可信起点、还欠什么、Critical、预算、下一步，以及"你不能自己宣布完成 + 不要写受保护路径"的铁律 | 内容由操作包自己的 `resume.mjs --durable-state --state-transport <auto / gh / git>` 渲染（与 `delivery_resume`、`delivery_iteration(action=status)` 同一来源、同一通道与同一预算计算，不另建账本）；权威状态读不到时写的是"读取失败或降级……下列数字来自工作树，不是恢复结果"，平台本就没有该引用时写"平台没有 refs/heads/delivery-state/main（不是读取失败）"，`stateSource: worktree` 时写"未读取（工作树来源）"。provider 是同步的，所以文本有缓存，未就绪时明确写"尚未就绪"而不是编一个摘要 |
 
 `v0.3 §4.3` 的七项控制由 `test/trust-boundary.test.mjs` 在**锁定宿主**上实测，并逐条给出结论（含"模型步骤只能观察、不能被拒绝"这一限制），而不是假设插件层可作可信边界。
 

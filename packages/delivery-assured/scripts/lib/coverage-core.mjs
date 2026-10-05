@@ -77,7 +77,7 @@ export function collectCriticalViolations(model, options) {
   return out
 }
 
-export function classifyManualReview(record, definition, model, { candidate, parentBaseline, trustedIssuer }) {
+export function classifyManualReview(record, definition, model, { candidate, parentBaseline, trustedIssuer, acceptedIssuers = null }) {
   const result = (status, detail) => ({ review_id: definition.id, status, detail })
   if (!record || record.review_id !== definition.id) return result(STATUS.REVIEW_PENDING, 'no Review Record')
   if (record.result !== 'PASS') return result(STATUS.CURRENT_FAILURE, `review result ${record.result}`)
@@ -87,7 +87,7 @@ export function classifyManualReview(record, definition, model, { candidate, par
   for (const key of ['contract_digest', 'acceptance_manifest_digest', 'acceptance_digest', 'verifier_config_digest']) {
     if (!Object.hasOwn(b, key) || b[key] !== model.currentBindings[key]) return result(STATUS.STALE_EVIDENCE, `Review Record ${key} differs from current standard`)
   }
-  const evidence = model.evidence.find(e => classifyEvidence(e, { model, codeRevision: candidate, parentBaseline, trustedIssuer }).fresh
+  const evidence = model.evidence.find(e => classifyEvidence(e, { model, codeRevision: candidate, parentBaseline, trustedIssuer, acceptedIssuers }).fresh
     && b.contract_revision === e.bindings.contract_revision && b.acceptance_revision === e.bindings.acceptance_revision
     && b.image_digest === e.environment.image_digest && b.deployment_id === e.environment.deployment_id)
   if (!evidence) return result(STATUS.STALE_EVIDENCE, 'Review Record is not bound to the verified deployment and standards')
@@ -109,7 +109,7 @@ export function classifyManualReview(record, definition, model, { candidate, par
  * Build one row per required obligation, plus the bucket summary.
  * `includeOptional` adds non-required obligations for inspection.
  */
-export function coverageRows(model, { candidate = null, parentBaseline = null, trustedIssuer = null, includeOptional = false } = {}) {
+export function coverageRows(model, { candidate = null, parentBaseline = null, trustedIssuer = null, acceptedIssuers = null, includeOptional = false } = {}) {
   const reviewRecords = new Map()
   for (const review of model.reviews) {
     if (review?.review_id) reviewRecords.set(review.review_id, review)
@@ -128,7 +128,7 @@ export function coverageRows(model, { candidate = null, parentBaseline = null, t
     for (const c of model.acceptance.cases) if ((slice.acceptance || []).includes(c.id)) for (const id of [...(c.obligation_ids || []), ...(c.outcome_ids || [])]) add(slicesByObligation, id, sliceId)
   }
   // A current verified run also records which Slice preserved old Spine cases.
-  for (const record of model.evidence) if (classifyEvidence(record, { model, codeRevision: candidate, parentBaseline, trustedIssuer }).fresh) {
+  for (const record of model.evidence) if (classifyEvidence(record, { model, codeRevision: candidate, parentBaseline, trustedIssuer, acceptedIssuers }).fresh) {
     for (const c of model.acceptance.cases) if (record.scope.required_case_ids.includes(c.id)) for (const id of [...(c.obligation_ids || []), ...(c.outcome_ids || [])]) add(slicesByObligation, id, record.scope.slice_id)
   }
 
@@ -154,14 +154,14 @@ export function coverageRows(model, { candidate = null, parentBaseline = null, t
     let failing = null
     let stale = null
     for (const testCase of automated) {
-      const proof = proveCase(model, testCase.id, { codeRevision: candidate, parentBaseline, trustedIssuer })
+      const proof = proveCase(model, testCase.id, { codeRevision: candidate, parentBaseline, trustedIssuer, acceptedIssuers })
       if (!proof) continue
       evidence.push({ case_id: testCase.id, outcome: proof.outcome, fresh: proof.fresh, attested: proof.attested, evidence_id: proof.ref })
       if (proof.current && proof.outcome !== 'passed') failing ||= { case_id: testCase.id, proof }
       else if (!proof.fresh) stale ||= { case_id: testCase.id, proof }
     }
 
-    const reviewProofs = manualReviews.map(review => classifyManualReview(reviewRecords.get(review.id), review, model, { candidate, parentBaseline, trustedIssuer }))
+    const reviewProofs = manualReviews.map(review => classifyManualReview(reviewRecords.get(review.id), review, model, { candidate, parentBaseline, trustedIssuer, acceptedIssuers }))
 
     // The reason a required obligation is not done has a priority order, and the
     // most specific blocking fact wins: a recorded failure, then a stale record,

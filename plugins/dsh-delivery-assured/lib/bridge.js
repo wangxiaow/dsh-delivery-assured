@@ -9,6 +9,7 @@
 import { existsSync, readFileSync } from 'node:fs'
 import { dirname, isAbsolute, join, resolve, delimiter } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { deriveBootstrap } from './bootstrap.js'
 
 const here = dirname(fileURLToPath(import.meta.url))
 
@@ -151,12 +152,28 @@ export function detectShellKind() {
 
 /**
  * Build the context the host plugin needs: where the pack is, which project to
- * inspect, and how to run Node.
+ * inspect, how to run Node, and which bootstrap step the project is on.
+ *
+ * A missing Contract is *not* a configuration problem any more: a configured project
+ * without one is a new project in bootstrap, and every entry must answer with the next
+ * concrete step instead of "no deliverable project found". The problem list is reserved
+ * for conditions a session cannot act on (unresolvable pack, no Node, no such project).
  */
 export function buildContext(config = {}, workspace = process.cwd()) {
   const packRoot = resolvePackRoot(config)
   const node = resolveNodeBin(config)
   const project = resolveProjectRoot(config, workspace)
+  // Only a project the configuration actually names (or one that already carries delivery
+  // markers) may be bootstrapped. An unrelated working directory must not be invited to
+  // grow a `.agent/` tree.
+  const eligible =
+    /^(configured|environment)/.test(project.source) || project.source === 'discovered'
+  const bootstrap = eligible
+    ? deriveBootstrap(project.root, {
+        repoRoot: config.repoRoot || null,
+        protectRepoMaterial: config.protectRepoMaterial !== false,
+      })
+    : null
   const problems = []
   if (!packRoot) {
     problems.push(
@@ -164,10 +181,16 @@ export function buildContext(config = {}, workspace = process.cwd()) {
     )
   }
   if (!node) problems.push('no Node executable was found; set nodeBin in the plugin config or DSH_DELIVERY_NODE')
-  if (!existsSync(join(project.root, '.agent', 'CONTRACT.yaml'))) {
-    problems.push(`no .agent/CONTRACT.yaml under ${project.root}; a read-only report needs a Contract to read`)
+  if (!existsSync(project.root)) {
+    problems.push(`the delivery project does not exist: ${project.root}`)
+  } else if (!bootstrap) {
+    problems.push(
+      `no delivery project was found under ${resolve(workspace)}: set projectRoot / DSH_DELIVERY_PROJECT to the repository that carries .agent/, ` +
+        'or start a new one there — bootstrap order is ' +
+        `${['.agent/project.yaml', 'ci/verifier.yaml', 'tests/acceptance/spec', '.agent/CONTRACT.yaml'].join(' → ')}`,
+    )
   }
-  return { packRoot, node, project, problems }
+  return { packRoot, node, project, bootstrap, problems }
 }
 
 /**

@@ -1,9 +1,10 @@
 #!/usr/bin/env node
 import { appendFileSync, readFileSync } from 'node:fs'
 import { EXIT, InputError, abs, findProjectRoot, finish, parseArgs, rel } from './lib/common.mjs'
-import { loadModel } from './lib/model.mjs'
 import { attemptFromCI, computeConvergence, resolveSlice, validateAttempt } from './lib/convergence.mjs'
-import { fetchDurableState } from './lib/durable-state.mjs'
+import { STATE_SOURCE, openStateView } from './lib/state-view.mjs'
+
+const TRANSPORTS = ['auto', 'gh', 'git']
 
 function main() {
   const opts = parseArgs(process.argv.slice(2), {
@@ -16,50 +17,92 @@ function main() {
     'falsified-assumption': 'value', 'previous-approach': 'value', 'new-approach': 'value',
     'next-check': 'list', 'preserved-obligation': 'list', 'evidence-ref': 'list',
     'scope-changed': 'boolean', 'comparison-approval-ref': 'value',
-    'durable-state': 'boolean',
+    'durable-state': 'boolean', 'state-transport': 'value', 'state-repo': 'value',
   })
   const root = findProjectRoot(opts.project)
-  // Reporting reads the ledger the platform actually holds. A write (`--record`/`--replan`)
-  // still appends to the working tree: the durable state is moved by CI, never by a session.
-  const durable = opts['durable-state']
-    ? fetchDurableState({ repoRoot: root, fallbackRoot: root })
-    : { available: false, sha: null, root: null, reason: null, dispose() {} }
-  let model
-  try {
-    model = loadModel(root, { stateRoot: durable.available ? durable.root : null })
-  } catch (error) {
-    durable.dispose?.()
-    throw error
-  }
-  const logPath = abs(root, model.cfg.paths.attemptsLog)
   const modes = [opts.record, opts.replan, opts['import-ci']].filter(Boolean)
   if (modes.length > 1) throw new InputError('choose one of --record, --replan, --import-ci')
+  const transport = opts['state-transport'] || 'auto'
+  if (!TRANSPORTS.includes(transport)) throw new InputError(`--state-transport must be one of ${TRANSPORTS.join(', ')} (got ${transport})`)
+  // Reporting reads the ledger the platform actually holds. A write (`--record`/`--replan`)
+  // still appends to the working tree: the durable state is moved by CI, never by a
+  // session, so gating a write on a state it cannot write would be an inconsistent check.
+  if (modes.length && opts['durable-state']) {
+    throw new InputError('--durable-state is a read-only report; a write appends to the working-tree ledger, so the two cannot be combined')
+  }
+  const view = openStateView(root, {
+    source: opts['durable-state'] ? STATE_SOURCE.DURABLE_REF : STATE_SOURCE.WORKTREE,
+    repoRoot: root,
+    fallbackRoot: root,
+    transport,
+    repo: opts['state-repo'] || null,
+  })
+  const durable = view.durable
+  const authority = view.authority
+  const model = view.model
+  const logPath = abs(root, model.cfg.paths.attemptsLog)
   if (modes.length) {
-    durable.dispose?.()
+    view.dispose()
     return record(model, logPath, opts)
   }
-  const budget = computeConvergence(model, { slice: opts.slice })
+  const budget = view.budget({ slice: opts.slice, acceptedIssuers: view.verification?.acceptedIssuers })
+  // A budget read off the working tree when the platform's ledger was asked for is not a
+  // smaller answer, it is a different one: `history_known` and `remaining` would describe
+  // the wrong history. It fails, and it names the channel that failed. A repository with
+  // no durable-state ref at all is not a failed read (see resume).
+  const degraded = opts['durable-state'] === true && authority.degraded
   const human = [
     `log: ${rel(root, logPath)}`,
     `durable state: ${
       !opts['durable-state']
         ? '(not read; pass --durable-state for the ledger and Baseline the platform holds)'
         : durable.available
-          ? `${durable.sha.slice(0, 12)} on ${durable.branch} (read-only)`
+          ? `${durable.sha.slice(0, 12)} on ${durable.branch} via ${durable.transport} (read-only)`
           : `unavailable — ${durable.reason}`
     }`,
+    `state source: ${authority.kind}`,
     `stable slice key: ${budget.slice_key || '(all slices)'}`,
     `attempts ${budget.total}/${budget.limits.total_attempt_limit}; replans ${budget.replans}/${budget.limits.replan_limit}; remaining ${budget.remaining ?? '(unknown)'}`,
-    `same-root-cause ${budget.maxSameRootCause}; no-progress ${budget.noProgressStreak}; final trusted pass ${budget.terminal_passed}`,
+    `same-root-cause ${budget.maxSameRootCause}; no-progress ${budget.noProgressStreak}; final verified pass ${budget.terminal_passed}`,
     ...budget.invalid_entries.map((p) => `BLOCK line ${p.line}: ${p.message}`),
     ...budget.critical_open.map((p) => `BLOCK Critical ${p}`),
   ]
-  if (budget.budget_blocked) human.push('ACTION stop: cumulative budget exhausted; owner decision required')
+  if (degraded) {
+    // Nothing about the budget is actionable here: the numbers describe another history.
+    human.push(`BLOCK ${authority.reason}`)
+  } else if (budget.budget_blocked) human.push('ACTION stop: cumulative budget exhausted; owner decision required')
   else if (budget.requiresReplan) human.push('ACTION stop patching: write a Replan Record; cumulative counters do not reset')
   else if (budget.terminal_passed) human.push('ACTION final allowed attempt passed; this diagnostic does not promote a Baseline')
   else if (!budget.blocked) human.push(`ACTION ${budget.remaining} attempt(s) remain`)
-  const outcome = finish({ code: budget.blocked ? EXIT.FAIL : EXIT.PASS, script: 'attempts', summary: `${budget.total} attempts, ${budget.remaining} left`, human, json: { project: root, log: rel(root, logPath), durable_state: { requested: opts['durable-state'] === true, available: durable.available === true, sha: durable.sha || null, reason: durable.reason || null }, slice: opts.slice || null, ...budget }, color: !opts.quiet, jsonRequested: opts.json === true })
-  durable.dispose?.()
+  const outcome = finish({
+    code: degraded || budget.blocked ? EXIT.FAIL : EXIT.PASS,
+    script: 'attempts',
+    summary: degraded ? `authoritative state unavailable (${authority.kind})` : `${budget.total} attempts, ${budget.remaining} left`,
+    human,
+    json: {
+      project: root,
+      log: rel(root, logPath),
+      durable_state: {
+        requested: opts['durable-state'] === true,
+        available: durable.available === true,
+        sha: durable.sha || null,
+        transport: durable.transport || null,
+        transport_requested: transport,
+        worktree_filled: authority.worktree_filled,
+        attempted: authority.attempted,
+        reason: durable.reason || null,
+      },
+      state_authority: authority.kind,
+      state_authoritative: authority.authoritative,
+      state_degraded: authority.degraded,
+      state_degraded_reason: authority.reason,
+      slice: opts.slice || null,
+      ...budget,
+    },
+    color: !opts.quiet,
+    jsonRequested: opts.json === true,
+  })
+  view.dispose()
   return outcome
 }
 

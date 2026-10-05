@@ -100,7 +100,7 @@ entry.apply(
 const defineToolModule = await import(new URL('../lib/define-tool.js', import.meta.url).href)
 const verdict = defineToolModule.defineToolVerdict
 if (verdict === 'ok') {
-  check('the plugin registered its five tools', registeredTools.length === 5, String(registeredTools.length))
+  check('the plugin registered its six tools', registeredTools.length === 6, String(registeredTools.length))
 } else {
   // This suite runs against whichever palette it can resolve, which may be a different
   // prerelease line; the contract then is to withhold every tool, loudly. Tool
@@ -124,7 +124,9 @@ check(
 )
 check(
   'the body documents the authority boundary',
-  /Only the trusted CI verification job produces/i.test(loaded?.content || ''),
+  /independent execution of the frozen Required acceptance/i.test(loaded?.content || '') &&
+    /default backend is the DSH host/i.test(loaded?.content || '') &&
+    /optional\s+high-assurance backend/i.test(loaded?.content || ''),
 )
 check(
   // The contract change to independent_auto removed the fixed human touchpoints; the

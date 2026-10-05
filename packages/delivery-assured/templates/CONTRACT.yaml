@@ -88,7 +88,9 @@ deployment:
   operational_acceptance_ids: ["<Acceptance 会话生成后填入>"]
 
 # 默认完成规则。未声明按 human_review 处理（缺字段不能变成自动放行）。
-# independent_auto：由精确版本上的实际执行与平台观测判定，不需要人工签收。
+# independent_auto：由精确候选上的实际执行判定，不需要人工签收。
+#   默认执行后端是 DSH/宿主自己跑冻结验收（.agent/project.yaml 不声明 verification 时即此）；
+#   只有声明 verification.backend: trusted_ci 才改由受保护 CI 工作流执行并要求平台观测。
 # human_review：需要真实人工评审记录（不能由 Agent 伪造）。
 completion_policy:
   mode: independent_auto

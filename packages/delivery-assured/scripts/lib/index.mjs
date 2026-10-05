@@ -42,8 +42,11 @@ export {
   standardBindings,
   treeDigest,
   remoteRef,
+  worktreeRevision,
   DISPOSITIONS,
 } from './common.mjs'
+export { commonGitDir, findGitDir, localRevision, parseGitConfig, readPackedRefs, remoteUrl as configuredRemoteUrl, resolveGitDir, resolveRef } from './worktree-git.mjs'
+export { createGhClient, parseGitHubRemote, resolveGhBin, whichCommand } from './gh-api.mjs'
 export {
   CASE_PASS,
   STALE_REASONS,
@@ -65,4 +68,17 @@ export {
   specDiffAgainstProtected,
 } from './model.mjs'
 export { STATUS, BLOCKING_STATUSES, blockingForView, collectCriticalViolations, coverageRows, proveCase, classifyManualReview } from './coverage-core.mjs'
-export { STATE_REF, STATE_SCOPES, fetchDurableState, inStateScope } from './durable-state.mjs'
+export { assessDelivery, assessAutomatedReviews, independentVerification, resolveCompletionPolicy } from './completion.mjs'
+export {
+  BACKEND_VALUES,
+  DEFAULT_FREEZE_PATH,
+  HOST_ENVIRONMENT_KIND,
+  HOST_VERIFIER_ISSUER,
+  VERIFICATION_BACKEND,
+  backendLabel,
+  issuerAssurance,
+  resolveVerification,
+} from './verification.mjs'
+export { createFreeze, currentFileDigests, freezeFiles, freezePath, readFreeze, verifyFreeze } from './standard-freeze.mjs'
+export { STATE_REF, STATE_SCOPES, STATE_TRANSPORT, fetchDurableState, inStateScope, readRemoteRef, resolveStateRepo } from './durable-state.mjs'
+export { STATE_AUTHORITY, STATE_SOURCE, budgetSignature, openStateView, stateAuthority } from './state-view.mjs'

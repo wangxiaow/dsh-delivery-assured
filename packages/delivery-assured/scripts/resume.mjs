@@ -14,11 +14,14 @@
  *             2 input/tool error.
  */
 
-import { EXIT, InputError, findProjectRoot, finish, gitDirty, gitRevision, parseArgs, remoteRef } from './lib/common.mjs'
+import { EXIT, InputError, findProjectRoot, finish, gitDirty, parseArgs, worktreeRevision } from './lib/common.mjs'
 import { coverageRows } from './lib/coverage-core.mjs'
-import { fetchDurableState } from './lib/durable-state.mjs'
-import { loadModel } from './lib/model.mjs'
-import { computeConvergence } from './lib/convergence.mjs'
+import { readRemoteRef } from './lib/durable-state.mjs'
+import { STATE_SOURCE, openStateView } from './lib/state-view.mjs'
+import { assessDelivery } from './lib/completion.mjs'
+import { backendLabel, resolveVerification } from './lib/verification.mjs'
+
+const TRANSPORTS = ['auto', 'gh', 'git']
 
 function main() {
   const opts = parseArgs(process.argv.slice(2), {
@@ -28,30 +31,42 @@ function main() {
     quiet: 'boolean',
     'fetch-remote': 'boolean',
     'durable-state': 'boolean',
+    'state-transport': 'value',
+    'state-repo': 'value',
   })
   if (opts.help) {
     process.stdout.write('resume — print the trustworthy starting point, what is still owed, and the next verification\n')
-    process.stdout.write('  --durable-state  also read refs/heads/delivery-state/main (Baseline, Evidence, attempts, Spine)\n')
+    process.stdout.write('  --durable-state          also read refs/heads/delivery-state/main (Baseline, Evidence, attempts, Spine)\n')
+    process.stdout.write('  --state-transport <how>  auto (default; gh first), gh (GitHub API), git (ls-remote + fetch)\n')
+    process.stdout.write('  --state-repo <owner/name>  GitHub repository to read the refs from; defaults to the configured remote\n')
     return EXIT.PASS
   }
   if (opts['durable-state'] && opts.offline) {
     throw new InputError('--durable-state reads the remote state ref, so it cannot be combined with --offline')
   }
+  const transport = opts['state-transport'] || 'auto'
+  if (!TRANSPORTS.includes(transport)) throw new InputError(`--state-transport must be one of ${TRANSPORTS.join(', ')} (got ${transport})`)
   const root = findProjectRoot(opts.project)
   // A session has no CI-style state overlay. Reading it here is what keeps a delivered
   // project from being reported as blocked: the attempt ledger, the Baseline metadata and
-  // the recorded comparison approval live only on that ref.
-  const durable = opts['durable-state']
-    ? fetchDurableState({ repoRoot: root, fallbackRoot: root })
-    : { available: false, sha: null, root: null, reason: null, dispose() {} }
-  let model
-  try {
-    model = loadModel(root, { stateRoot: durable.available ? durable.root : null })
-  } catch (error) {
-    durable.dispose?.()
-    throw error
-  }
-  const candidate = gitRevision(root, 'HEAD')
+  // the recorded comparison approval live only on that ref. The source is named once and
+  // the model and budget come from the same shared view every other entry uses, so two
+  // readers of one history cannot disagree.
+  const view = openStateView(root, {
+    source: opts['durable-state'] ? STATE_SOURCE.DURABLE_REF : STATE_SOURCE.WORKTREE,
+    repoRoot: root,
+    fallbackRoot: root,
+    transport,
+    repo: opts['state-repo'] || null,
+  })
+  const durable = view.durable
+  const authority = view.authority
+  const model = view.model
+  // Where the candidate revision came from is a fact about this machine, not about the
+  // project: a confined session shell can start `git` but not the helpers it forks, and
+  // the old wording ("not a git repository") blamed the repository for that.
+  const candidateSource = worktreeRevision(root, 'HEAD')
+  const candidate = candidateSource.revision
   const dirty = gitDirty(root)
   const notes = []
   const blockers = []
@@ -60,56 +75,97 @@ function main() {
   const baselineRef = model.cfg.baselineRef
   const remote = model.cfg.baselineRemote
   const localBaseline = model.baselines.length > 0 ? model.baselines[model.baselines.length - 1] : null
-  let remoteState = { checked: false, sha: null }
+  let remoteState = { checked: false, sha: null, transport: null, reason: null, not_found: false }
   if (!opts.offline) {
-    const sha = remoteRef(root, baselineRef, remote)
-    remoteState = { checked: true, sha }
-    if (!sha) {
+    // The protected reference is a platform fact, so it is read through the same
+    // authoritative channel as the state ref. Falling back to `git ls-remote` alone made
+    // an unreadable reference look like "no Baseline was ever promoted".
+    const read = readRemoteRef({ repoRoot: root, ref: baselineRef, transport, remote, repo: opts['state-repo'] || null })
+    remoteState = {
+      checked: true,
+      sha: read.sha,
+      transport: read.ok ? read.transport : null,
+      reason: read.ok ? null : read.reason,
+      not_found: read.notFound === true,
+    }
+    if (!read.ok) {
       notes.push(
-        `remote ${remote} has no ${baselineRef} (no remote configured, no permission, or no Baseline promoted yet)`,
+        read.notFound
+          ? `remote ${remote} has no ${baselineRef} (the platform reports it does not exist: no Baseline promoted yet)`
+          : `the protected ${baselineRef} could not be read on ${remote}: ${read.reason}`,
       )
     } else if (!localBaseline) {
-      notes.push(`remote ${baselineRef} = ${sha.slice(0, 12)} but no local baseline metadata is available to bind it`)
-    } else if (localBaseline.code_revision !== sha) {
+      notes.push(`remote ${baselineRef} = ${read.sha.slice(0, 12)} but no local baseline metadata is available to bind it`)
+    } else if (localBaseline.code_revision !== read.sha) {
       blockers.push(
-        `remote ${baselineRef} (${sha.slice(0, 12)}) differs from local baseline ${localBaseline.baseline_id} (${String(localBaseline.code_revision).slice(0, 12)}); re-read the remote before trusting either`,
+        `remote ${baselineRef} (${read.sha.slice(0, 12)}) differs from local baseline ${localBaseline.baseline_id} (${String(localBaseline.code_revision).slice(0, 12)}); re-read the remote before trusting either`,
       )
     }
   } else {
     notes.push('offline mode: remote protected references were not read')
   }
 
+  // 1b. Authoritative state. A report whose numbers come from the working tree while the
+  // caller asked for the platform's state is a failed recovery, not a recovery with a
+  // smaller answer: it must block, and it must say which channel failed. A project whose
+  // declared backend is the host-executed verifier has no such ref at all, which is not a
+  // failed read (the view reports `worktree-no-durable-state-ref` and is not degraded).
+  if (opts['durable-state'] && authority.degraded) blockers.push(authority.reason)
+
   // 2. CI evidence, attempts and deployment state.
   const trustedIssuer = model.cfg.ci?.trusted_issuer || null
+  const verification = view.verification || resolveVerification(model.cfg)
+  const acceptedIssuers = verification.acceptedIssuers
   // An issuer string is a label any author can write, so this count says
-  // "matches the configured name", never "was produced by the trusted job".
-  // Independent attestation belongs to the CI consumer, not to this reader.
-  const issuerMatch = model.evidence.filter((e) => !trustedIssuer || e.issuer?.identity === trustedIssuer)
+  // "matches a configured issuer", never "was produced by that backend".
+  // Independent attestation belongs to the consumer, not to this reader.
+  const issuerMatch = model.evidence.filter((e) => acceptedIssuers.includes(e.issuer?.identity))
   const otherIssuers = model.evidence.length - issuerMatch.length
   let lastAttempt = null
   const stateHint = model.state || {}
 
   // 3. Recompute Coverage.
-  const { rows, buckets } = coverageRows(model, { candidate, parentBaseline: localBaseline?.baseline_id || null, trustedIssuer })
+  const { rows, buckets } = coverageRows(model, { candidate, parentBaseline: localBaseline?.baseline_id || null, trustedIssuer, acceptedIssuers })
 
   // 4. Local diff stays an unverified Candidate.
-  if (dirty === null) notes.push('not a git repository: local diff cannot be classified')
-  else if (dirty.length > 0) notes.push(`${dirty.length} local change(s) are an unverified Candidate and were not touched`)
+  if (dirty === null) {
+    notes.push(
+      candidateSource.source === 'git-files'
+        ? 'a confined shell cannot start git, so the local diff was not classified; the candidate revision was read from the Git metadata files'
+        : 'not a Git working tree (or git cannot run here): the local diff cannot be classified',
+    )
+  } else if (dirty.length > 0) notes.push(`${dirty.length} local change(s) are an unverified Candidate and were not touched`)
 
-  // 5. Budget position.
-  const budget = computeConvergence(model, { candidate, parentBaseline: localBaseline?.baseline_id || null })
+  // 5. Budget position. The shared view owns the calculator: the kernel, the iteration
+  // summary and the CI promotion job must not derive their own numbers from other state.
+  const budget = view.budget({ candidate, parentBaseline: localBaseline?.baseline_id || null, acceptedIssuers })
   lastAttempt = budget.last_attempt
   for (const problem of budget.invalid_entries) blockers.push(`attempt history line ${problem.line}: ${problem.message}`)
   for (const problem of budget.critical_open) blockers.push(`Critical ${problem}`)
 
-  // 6. Suggested action.
-  const suggestion = nextAction({ model, buckets, blockers, budget, remoteState, localBaseline, trustedIssuer })
+  // 6. The delivery verdict. Computed from the evidence that actually exists, never from
+  // a declaration: `Delivered` needs the full frozen Required set passing on this exact
+  // candidate, from a backend this project accepts.
+  const delivery = assessDelivery(model, {
+    candidate,
+    parentBaseline: localBaseline?.baseline_id || null,
+    trustedIssuer,
+    acceptedIssuers,
+    verification,
+    budget,
+  })
+
+  // 7. Suggested action.
+  const suggestion = nextAction({ model, buckets, blockers, budget, remoteState, localBaseline, trustedIssuer, verification, delivery })
 
   const code = blockers.length > 0 || budget.blocked ? EXIT.FAIL : EXIT.PASS
 
   const human = []
   human.push(`project      : ${root}`)
-  human.push(`candidate    : ${candidate ? candidate.slice(0, 12) : '(no git revision)'}${dirty && dirty.length ? ` (+${dirty.length} uncommitted)` : ''}`)
+  human.push(
+    `candidate    : ${candidate ? candidate.slice(0, 12) : '(no git revision)'}${dirty && dirty.length ? ` (+${dirty.length} uncommitted)` : ''}` +
+      `${candidate && candidateSource.source === 'git-files' ? ' [read from the Git metadata files; git cannot run in this shell]' : ''}`,
+  )
   human.push(
     `baseline     : ${localBaseline ? `${localBaseline.baseline_id} @ ${String(localBaseline.code_revision).slice(0, 12)} (${baselineRef})` : '(none recorded locally)'}`,
   )
@@ -124,19 +180,42 @@ function main() {
     )
   }
   human.push(
-    `remote ref   : ${opts.offline ? '(not read)' : remoteState.sha ? `${remoteState.sha.slice(0, 12)} on ${remote}` : `absent on ${remote}`}`,
+    `remote ref   : ${
+      opts.offline
+        ? '(not read)'
+        : remoteState.sha
+          ? `${remoteState.sha.slice(0, 12)} on ${remote} (via ${remoteState.transport})`
+          : remoteState.not_found
+            ? `absent on ${remote}`
+            : `could not be read on ${remote} — ${remoteState.reason}`
+    }`,
   )
   human.push(
     `durable state: ${
       !opts['durable-state']
         ? '(not read; pass --durable-state for the Baseline, Evidence, attempts and Spine the platform actually holds)'
         : durable.available
-          ? `${durable.sha.slice(0, 12)} on ${durable.branch} (read-only; nothing was written into this project)`
-          : `unavailable — ${durable.reason}; records below are the working tree only`
+          ? `${durable.sha.slice(0, 12)} on ${durable.branch} via ${durable.transport} (read-only; nothing was written into this project)`
+          : `unavailable — ${durable.reason}`
     }`,
   )
+  human.push(`state source : ${authority.kind}${authority.transport ? ` (${authority.transport})` : ''}`)
+  for (const attempt of authority.attempted || []) {
+    if (!attempt.ok) human.push(`               ${attempt.transport}: ${attempt.reason}`)
+  }
+  if (authority.worktree_filled.length > 0) {
+    human.push(`               filled from the working tree, not the ref: ${authority.worktree_filled.join(', ')}`)
+  }
   human.push(
-    `evidence     : ${model.evidence.length} local record(s), ${issuerMatch.length} naming the configured issuer${trustedIssuer ? ` (${trustedIssuer})` : ' (no trusted issuer configured)'}${otherIssuers ? `, ${otherIssuers} naming another issuer` : ''}; origin not verified here, so none of them is independently attested`,
+    `evidence     : ${model.evidence.length} local record(s), ${issuerMatch.length} from a configured verification issuer` +
+      `${acceptedIssuers.length ? ` (${acceptedIssuers.join(', ')})` : ' (none configured)'}${otherIssuers ? `, ${otherIssuers} from another issuer` : ''}; origin is checked by the backend, not by this reader`,
+  )
+  human.push(`verification : ${backendLabel(verification.backend)}${verification.declared ? '' : ' (default; no verification.backend was declared)'}`)
+  human.push(
+    `delivered    : ${delivery.delivered ? 'yes' : 'no'}` +
+      (delivery.verification
+        ? ` — ${delivery.verification.evidence_id} (${delivery.verification.backend}, ${delivery.verification.executed_cases}/${delivery.verification.required_cases} cases)`
+        : ' — no independent execution of the frozen Required set covers this candidate'),
   )
   human.push(`current slice: ${stateHint.current_slice || model.slices.find((s) => s.status && s.status !== 'VERIFIED_DONE')?.id || '(none declared)'}`)
   human.push('')
@@ -170,8 +249,10 @@ function main() {
   human.push('next:')
   for (const line of suggestion) human.push(`  - ${line}`)
   human.push('')
-  human.push('note: STATE.yaml is a hint. Only the trusted CI verification job produces evidence, and only')
-  human.push('      its Promotion job may advance the protected baseline reference.')
+  human.push('note: STATE.yaml is a hint. A delivery is complete only when an independent execution of the')
+  human.push(`      frozen Required set passes on this exact candidate (backend: ${backendLabel(verification.backend)}).`)
+  human.push('      The protected CI workflow, the authority refs and the Baseline are the optional')
+  human.push('      high-assurance backend, not a precondition for an ordinary project.')
 
   const outcome = finish({
     code,
@@ -179,20 +260,61 @@ function main() {
     summary:
       blockers.length > 0
         ? `${blockers.length} blocking condition(s)`
-        : `${buckets.verified.length} verified, ${owed.reduce((n, [, l]) => n + l.length, 0)} owed, next: ${suggestion[0] || 'none'}`,
+        : delivery.delivered
+          ? `Delivered — ${buckets.verified.length} verified obligation(s), no owed result`
+          : `${buckets.verified.length} verified, ${owed.reduce((n, [, l]) => n + l.length, 0)} owed, next: ${suggestion[0] || 'none'}`,
     human,
     json: {
       project: root,
       diagnostic_only: true,
       offline: opts.offline === true,
+      delivered: delivery.delivered,
+      delivery: {
+        completion_mode: delivery.completion_mode,
+        backend: delivery.backend,
+        candidate: delivery.candidate,
+        blocking: delivery.blocking,
+        limitations: delivery.limitations,
+        verification: delivery.verification
+          ? {
+              evidence_id: delivery.verification.evidence_id,
+              issuer: delivery.verification.issuer,
+              backend: delivery.verification.backend,
+              finished_at: delivery.verification.finished_at,
+              required_cases: delivery.verification.required_cases,
+              executed_cases: delivery.verification.executed_cases,
+              skipped_required_cases: delivery.verification.skipped_required_cases,
+              deployment_observed: delivery.verification.deployment_observed,
+              run_log: delivery.verification.run_log,
+            }
+          : null,
+      },
+      verification: {
+        backend: verification.backend,
+        declared: verification.declared,
+        declared_value: verification.declared_value,
+        accepted_issuers: acceptedIssuers,
+        trusted_ci_configured: verification.trustedCiConfigured,
+        problems: verification.problems,
+      },
       durable_state: {
         requested: opts['durable-state'] === true,
         available: durable.available === true,
         sha: durable.sha || null,
+        transport: durable.transport || null,
+        transport_requested: transport,
         scope_count: durable.scopes?.length ?? 0,
+        worktree_filled: authority.worktree_filled,
+        attempted: authority.attempted,
         reason: durable.reason || null,
       },
+      state_authority: authority.kind,
+      state_authoritative: authority.authoritative,
+      state_degraded: authority.degraded,
+      state_degraded_reason: authority.reason,
       candidate,
+      candidate_source: candidateSource.source,
+      candidate_source_note: candidateSource.note || null,
       dirty,
       baseline_ref: baselineRef,
       remote: remoteState,
@@ -209,8 +331,11 @@ function main() {
         issuer_match: issuerMatch.length,
         other_issuer: otherIssuers,
         configured_issuer: trustedIssuer,
+        accepted_issuers: acceptedIssuers,
         independently_attested: 0,
-        note: 'this reader cannot verify where a local record came from; only the CI consumer and the Promotion job check the authenticated platform receipt',
+        note:
+          'this reader cannot verify where a local record came from; the host backend checks its own retained execution ' +
+          'receipt and the CI consumer checks the authenticated platform receipt',
       },
       current_slice: stateHint.current_slice || null,
       owed: {
@@ -230,7 +355,7 @@ function main() {
     color: !opts.quiet,
     jsonRequested: opts.json === true,
   })
-  durable.dispose?.()
+  view.dispose()
   return outcome
 }
 
@@ -239,10 +364,17 @@ function pad(text, width) {
   return s.length >= width ? s : s + ' '.repeat(width - s.length)
 }
 
-function nextAction({ model, buckets, blockers, budget, remoteState, localBaseline, trustedIssuer }) {
+function nextAction({ model, buckets, blockers, budget, remoteState, localBaseline, trustedIssuer, verification, delivery }) {
   const out = []
   if (blockers.length > 0) {
     out.push('resolve the blocking condition above before any further promotion attempt')
+    return out
+  }
+  if (delivery?.delivered) {
+    out.push('delivered: nothing is owed. Record the outcome in the iteration journal (action=close) and start the next requirement with action=open')
+    if (verification?.trustedCiConfigured) {
+      out.push('optional high assurance: the protected CI workflow can still verify this candidate and promote a Baseline')
+    }
     return out
   }
   if (budget.budget_blocked) {
@@ -261,19 +393,22 @@ function nextAction({ model, buckets, blockers, budget, remoteState, localBaseli
   if (buckets.current_failure.length > 0) {
     out.push(`diagnose the current failure on ${buckets.current_failure.slice(0, 5).join(', ')} before adding scope`)
   }
-  if (!remoteState.sha && !model.state?.baseline_ref) {
-    out.push(`after the remote is reachable, promote Baseline #0 through the Promotion job so ${model.cfg.baselineRef} exists`)
+  if (buckets.stale_evidence.length > 0 && buckets.current_failure.length === 0) {
+    out.push(`re-run the frozen verification on this candidate: ${buckets.stale_evidence.slice(0, 5).join(', ')} — a record bound to another revision is not a pass`)
   }
-  if (!trustedIssuer) {
-    out.push('configure ci.trusted_issuer in .agent/project.yaml so evidence can be attributed to the real verification job')
+  if (buckets.pending_implementation.length > 0) {
+    out.push(`implement and then verify: ${buckets.pending_implementation.slice(0, 5).join(', ')} still have no execution record`)
   }
   if (buckets.review_pending.length > 0 && buckets.pending_implementation.length === 0 && buckets.current_failure.length === 0) {
     out.push(`machine work is closed; the owner still owes the final Journey Review for ${buckets.review_pending.slice(0, 5).join(', ')}`)
   }
+  if (!localBaseline && verification?.trustedCiConfigured) {
+    out.push(`optional high assurance: promote Baseline #0 through the Promotion job so ${model.cfg.baselineRef} exists`)
+  }
   if (out.length === 0) {
     out.push(
-      `run the structural check for this Slice, then the local gates: ` +
-        `check-gaps.mjs --phase slice --slice ${model.state?.current_slice || '<id>'}, then verify.mjs --local`,
+      `run the structural check for this Slice, then the frozen verification: ` +
+        `check-gaps.mjs --phase slice --slice ${model.state?.current_slice || '<id>'}, then verify.mjs --backend host --write-evidence`,
     )
   }
   return out
