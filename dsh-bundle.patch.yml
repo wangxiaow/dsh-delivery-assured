@@ -1,0 +1,21 @@
+# DSH bundle patch — the row a GitHub-repository install inserts.
+#
+# This file is what `dsh.bundle.patch` in the repository root package.json names,
+# so `DSH → 添加插件 → 输入 https://github.com/wangxiaow/dsh-delivery-assured`
+# inserts the plugin without any local checkout, junction or --patch overlay.
+#
+# Config keys (all optional; each also has an environment fallback):
+#   packRoot     directory containing scripts/resume.mjs   (DSH_DELIVERY_PACK)
+#   projectRoot  the delivery repository to inspect        (DSH_DELIVERY_PROJECT)
+#   nodeBin      Node executable to run the scripts with   (DSH_DELIVERY_NODE)
+#   workspace    fallback working directory for discovery
+#
+# `projectRoot: '.'` is resolved against the session's own workspace on every call,
+# so a session opened on an ordinary project inspects *that* project, and a new
+# project is bootstrapped there. No per-machine path is baked in. A profile that
+# wants a different project overrides this row in its own cordis.patch.yml.
+- insert:
+    - id: delivery-assured
+      name: 'dsh-delivery-assured'
+      config:
+        projectRoot: '.'

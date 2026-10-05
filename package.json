@@ -1,0 +1,50 @@
+{
+  "name": "dsh-delivery-assured",
+  "version": "0.5.1",
+  "description": "DSH plugin for the Delivery-Assured Progressive SE operation pack: read-only delivery status, coverage, resume, budget and local verification for a DSH session. Install it straight from this repository's URL.",
+  "type": "module",
+  "license": "MIT",
+  "author": "wangxiaow",
+  "keywords": [
+    "deepseek",
+    "harness",
+    "dsh",
+    "dsh-plugin",
+    "delivery",
+    "acceptance",
+    "baseline",
+    "evidence"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "main": "plugins/dsh-delivery-assured/lib/index.js",
+  "exports": {
+    ".": {
+      "default": "./plugins/dsh-delivery-assured/lib/index.js"
+    },
+    "./cordis.patch.yml": "./dsh-bundle.patch.yml",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "plugins/dsh-delivery-assured",
+    "plugins/dsh-delivery-assured/package.json",
+    "packages/delivery-assured",
+    "dsh-bundle.patch.yml",
+    "README.md",
+    "LICENSE"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./dsh-bundle.patch.yml"
+    }
+  },
+  "peerDependencies": {
+    "@deepseek-ai/dsh-tools": "^0.2.0-rc.2"
+  },
+  "peerDependenciesMeta": {
+    "@deepseek-ai/dsh-tools": {
+      "optional": false
+    }
+  }
+}
