@@ -1,10 +1,10 @@
 {
   "mvp_ready": true,
   "completion_mode": "independent_auto",
-  "baseline_id": "BL-002",
-  "code_revision": "c5b50e8d437986564e8a190a748ef142ebbaff6e",
-  "image_digest": "sha256:fe117f2f95e363ee4a1ddfaaa5d4a3eb3c3f8f5d415b900da11c5d05267f2138",
-  "deployment_id": "artifact-install-37261822269-1",
+  "baseline_id": "BL-003",
+  "code_revision": "fd575a553630a88adb68326db5a77c5a4a83decb",
+  "image_digest": "sha256:c4abea9aa4379b7e95073bced9bee5f2cf45fa3fd4e988d1ca12c2094de36b91",
+  "deployment_id": "artifact-install-37265252009-1",
   "environment_kind": "production_like_ci",
   "environment_limitations": [
     "本仓库没有独立 staging 通道：验证在受保护 CI runner 上安装并运行打包产物，报告 revision 与 digest",
@@ -12,10 +12,10 @@
     "自动验收只覆盖机器可观察结果：交互易用性等主观判断不在自动结论内，需要时由用户主动发起人工评审"
   ],
   "evidence_refs": [
-    "ci:verify:37261822269-1"
+    "ci:verify:37265252009-1"
   ],
-  "readiness_ref": "ci/recording/mvp-finalizations/37261990313-1.json",
+  "readiness_ref": "ci/recording/mvp-finalizations/37265376886-1.json",
   "owner_confirmation_ref": null,
-  "verification_reference": "https://github.com/wangxiaow/dsh-delivery-assured/actions/runs/37261990313/attempts/1",
-  "promotion_run_id": "37261990313-1"
+  "verification_reference": "https://github.com/wangxiaow/dsh-delivery-assured/actions/runs/37265376886/attempts/1",
+  "promotion_run_id": "37265376886-1"
 }

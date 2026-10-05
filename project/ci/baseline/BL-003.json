@@ -1,0 +1,72 @@
+{
+  "baseline_id": "BL-003",
+  "protected_ref": "refs/heads/baseline/main",
+  "code_revision": "fd575a553630a88adb68326db5a77c5a4a83decb",
+  "parent_baseline": "BL-002",
+  "contract_revision": "9bd6454a96475363db8d48fe00b0d19d6b0a0dfb",
+  "acceptance_revision": "9bd6454a96475363db8d48fe00b0d19d6b0a0dfb",
+  "verifier_config_revision": "fd575a553630a88adb68326db5a77c5a4a83decb",
+  "verification_scope": {
+    "machine_verified_outcomes": [
+      "BR-AUTO-EVIDENCE-ONLY",
+      "BR-EVIDENCE-NOT-LOCAL",
+      "BR-STATUS-DERIVED",
+      "C-AUTO-COMPLETION",
+      "C-BOOTSTRAP",
+      "C-INPUT-DIAGNOSTICS",
+      "C-RECOVERY",
+      "C-STATUS-COMPUTATION",
+      "J-AUTO-DELIVERY",
+      "J-AUTO-DELIVERY.accepted",
+      "J-AUTO-DELIVERY.no_false_pass",
+      "J-AUTO-DELIVERY.recovered",
+      "J-CI-AUTHORITY",
+      "J-CI-AUTHORITY.blocked_without_ci",
+      "J-CI-AUTHORITY.local_only",
+      "J-DELIVERY-STATUS",
+      "J-DELIVERY-STATUS.ready",
+      "J-DELIVERY-STATUS.rejected"
+    ],
+    "remaining_outcomes": [],
+    "manual_reviews_pending": [],
+    "spine_manifest_digest": "7f7fecf10e3aca2cfd9e684530e0532bde5e787443bf1fe7fca6a25ce8493bff"
+  },
+  "environment": {
+    "validated_in": "production_like_ci",
+    "image_digest": "sha256:c4abea9aa4379b7e95073bced9bee5f2cf45fa3fd4e988d1ca12c2094de36b91",
+    "migration_digest": null,
+    "deployment_id": "artifact-install-37265252009-1",
+    "staging_deployment_id": null,
+    "mvp_ready_environment": "production_like_ci",
+    "limitations": [
+      "本仓库没有独立 staging 通道：验证在受保护 CI runner 上安装并运行打包产物，报告 revision 与 digest",
+      "不提供容器/命名空间级隔离；隔离后端仍是欠账，runtime_isolation 只作为告警记录在 Baseline 元数据",
+      "自动验收只覆盖机器可观察结果：交互易用性等主观判断不在自动结论内，需要时由用户主动发起人工评审"
+    ]
+  },
+  "evidence_refs": [
+    "ci:verify:37265252009-1"
+  ],
+  "mvp_readiness_ref": "ci/recording/mvp-finalizations/37265376886-1.json",
+  "completion_mode": "independent_auto",
+  "verification_reference": "https://github.com/wangxiaow/dsh-delivery-assured/actions/runs/37265376886/attempts/1",
+  "promotion_run_id": "37265376886-1",
+  "runtime_isolation": {
+    "verified": false,
+    "note": "candidate runtime isolation is not implemented or attested; recorded as a warning, not a promotion gate"
+  },
+  "accumulated_spine_case_ids": [
+    "A-AUTO-NO-FALSE-PASS",
+    "A-AUTO-POLICY-DEFAULT",
+    "A-BOOTSTRAP-CLEAN-BOOT",
+    "A-CLI-BLOCKED-WITHOUT-CI",
+    "A-CLI-CRITICAL-NOT-LOCAL-PASS",
+    "A-CLI-DOES-NOT-WRITE",
+    "A-CLI-INPUT-REJECTED",
+    "A-CLI-STALE-EVIDENCE",
+    "A-CLI-STATE-DONE-NOT-COMPLETION",
+    "A-CLI-STATUS-JSON",
+    "A-ITERATION-RECOVERY"
+  ],
+  "accumulated_spine_manifest_digest": "26d3daa7be3265f9981732398fe62ddd1d4469a5c949cbd8c7ef8f59aa2831fa"
+}
