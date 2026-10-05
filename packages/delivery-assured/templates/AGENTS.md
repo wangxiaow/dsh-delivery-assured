@@ -28,7 +28,7 @@
 9. 达到无进展/同根因上限就停止 Patch 并写 Replan；达到总预算则阻塞。换会话或 Replan 不重置预算。
 10. 只有受保护 CI 可晋升 Baseline；STATE 的 DONE 不是完成证据。新增既定语义下的测试经标准更新流程自动纳入，删除或降标需要明确确认。
 11. Critical Invariant 违规立即阻塞。恢复前检查迁移和外部副作用，不能把 Git 回退当完整系统回退。
-12. MVP_READY 必须满足全 Contract Coverage、当前全量机器验收、真实 staging、你的最终 Journey Review 及发布前提。报告未完成项，不夸大交付范围。
+12. 完成规则以 Contract 的 `completion_policy` 为唯一来源：默认 `independent_auto`（全部 Required 与 Spine 在冻结候选上实际执行、发布前提被平台观测）；未声明按 `human_review` 处理；人工 Review 是用户主动选择的模式。无法自动验证的部分如实报告为限制，不夸大交付范围。
 
 ## 每次结束留下的最小摘要
 

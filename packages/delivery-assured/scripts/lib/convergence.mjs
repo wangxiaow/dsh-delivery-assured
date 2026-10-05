@@ -255,7 +255,9 @@ export function computeConvergence(model, { slice = null, logExists = existsSync
   }
   for (const a of attempts) {
     const root = `${a.slice_key}:${a.root_cause_key}`
-    byRoot.set(root, (byRoot.get(root) || 0) + 1)
+    // A successful execution consumes an attempt, not a failure. Keep all ledger
+    // entries and cumulative failed roots; a stale success still is not a failure.
+    if (a.result !== 'passed') byRoot.set(root, (byRoot.get(root) || 0) + 1)
     const previous = previousByKey.get(a.slice_key)
     if (!fixedByKey.has(a.slice_key)) fixedByKey.set(a.slice_key, a)
     let fixed = fixedByKey.get(a.slice_key)
@@ -272,7 +274,8 @@ export function computeConvergence(model, { slice = null, logExists = existsSync
     }
     const comparable = previous && sameStandard(a, fixed) && sameStandard(previous, fixed)
     const improved = comparable && (a.required_passed > previous.required_passed || a.spine_failures < previous.spine_failures || a.critical_violations?.length < previous.critical_violations?.length)
-    noProgressStreak = improved ? 0 : noProgressStreak + 1
+    const successful = a.result === 'passed' && sameStandard(a, fixed) && evidenceFor(a)
+    noProgressStreak = improved || successful ? 0 : noProgressStreak + 1
     previousByKey.set(a.slice_key, a)
   }
   const maxSameRootCause = byRoot.size ? Math.max(...byRoot.values()) : 0

@@ -34,6 +34,9 @@ import { attemptFromCI, computeConvergence } from '../../packages/delivery-assur
 import { validateFixtureTarget, validatePromotionReceipt, isolationWarnings } from './ci-trust.mjs'
 import { scopeForSlice } from '../../packages/delivery-assured/scripts/lib/selection.mjs'
 import { decodeEvidence, confirmOwnerApproval, finalizeMvp } from './ci-mvp.mjs'
+import { finalizeAutoMvp } from './ci-auto-mvp.mjs'
+import { observeReleasePrerequisites } from './ci-release-observer.mjs'
+import { resolveCompletionPolicy } from '../../packages/delivery-assured/scripts/lib/completion.mjs'
 import { confirmReceipt, diagnosticContext } from './ci-record.mjs'
 import { unresolvedDiagnostics } from './ci-resolution.mjs'
 import { assertStateSnapshot } from './ci-state-snapshot.mjs'
@@ -267,28 +270,62 @@ async function main() {
 
   // Finalize the authenticated original run after the owner reviewed its exact
   // subject. This job executes no Candidate and never changes original Evidence.
+  // The frozen completion policy decides who may close the project: automatic
+  // acceptance reads platform observations, human review still needs the owner's
+  // authenticated comment. Neither path can be reached by a model's claim.
   let finalReadiness = null
+  let completionMode = null
   if (opts.mode === 'MVP_READY' && evidence) {
     try {
       const sourceDigest = sha256(readFileSync(evidence.__file))
-      let ownerConfirmation
+      const policy = resolveCompletionPolicy(model.contract)
+      completionMode = policy.mode
       if (opts.fixture) {
         if (!opts.ownerApproval) throw new Error('fixture MVP_READY requires explicit owner approval fixture')
         const approval = JSON.parse(readFileSync(resolve(opts.ownerApproval), 'utf8'))
-        ownerConfirmation = { approval, owner: 'fixture-owner', reference: 'fixture:owner-approval', digest: sha256(JSON.stringify(approval)) }
+        const ownerConfirmation = { approval, owner: 'fixture-owner', reference: 'fixture:owner-approval', digest: sha256(JSON.stringify(approval)) }
+        finalReadiness = finalizeMvp(model, evidence, ownerConfirmation, {
+          sourceDigest, parentBaseline: parentId,
+          finalizationRun: 'fixture-finalization-1',
+          finalizerRevision: evidence.bindings.verifier_config_revision,
+        })
+        model.reviews = finalReadiness.reviews
+        if (finalReadiness.standard_change) model.standardChanges = [...model.standardChanges, finalReadiness.standard_change]
+      } else if (policy.mode === 'independent_auto') {
+        if (process.env.DSH_CI_RUN_ID !== `${process.env.GITHUB_RUN_ID}-${process.env.GITHUB_RUN_ATTEMPT}` || process.env.GITHUB_REF !== 'refs/heads/main') throw new Error('finalization must name this exact trusted promotion run')
+        const reference = `https://github.com/${process.env.GITHUB_REPOSITORY}/actions/runs/${process.env.GITHUB_RUN_ID}/attempts/${process.env.GITHUB_RUN_ATTEMPT}`
+        const releaseReceipt = await observeReleasePrerequisites(model, {
+          repository: process.env.GITHUB_REPOSITORY,
+          candidate: evidence.bindings?.code_revision,
+          token: process.env.DSH_GITHUB_READ_TOKEN,
+          reference,
+          baselineRef: opts.baselineRef,
+        })
+        releaseReceipt.bindings = {
+          ...releaseReceipt.bindings,
+          image_digest: evidence.environment?.image_digest ?? null,
+          deployment_id: evidence.environment?.deployment_id ?? null,
+        }
+        for (const item of releaseReceipt.prerequisites) if (item.result !== 'PASS') notes.push(`release prerequisite ${item.id} is UNVERIFIED: ${item.error}`)
+        finalReadiness = finalizeAutoMvp(model, evidence, releaseReceipt, {
+          sourceDigest, parentBaseline: parentId,
+          finalizationRun: process.env.DSH_CI_RUN_ID,
+          finalizerRevision: process.env.GITHUB_SHA,
+          sourceReference: reference,
+        })
       } else {
         if (process.env.DSH_CI_RUN_ID !== `${process.env.GITHUB_RUN_ID}-${process.env.GITHUB_RUN_ATTEMPT}` || process.env.GITHUB_REF !== 'refs/heads/main') throw new Error('finalization must name this exact trusted promotion run')
-        ownerConfirmation = await confirmOwnerApproval(process.env.DSH_OWNER_APPROVAL_REF, process.env.GITHUB_REPOSITORY, process.env.DSH_GITHUB_READ_TOKEN, cfg.ci?.product_owner || process.env.GITHUB_REPOSITORY_OWNER)
+        const ownerConfirmation = await confirmOwnerApproval(process.env.DSH_OWNER_APPROVAL_REF, process.env.GITHUB_REPOSITORY, process.env.DSH_GITHUB_READ_TOKEN, cfg.ci?.product_owner || process.env.GITHUB_REPOSITORY_OWNER)
+        finalReadiness = finalizeMvp(model, evidence, ownerConfirmation, {
+          sourceDigest, parentBaseline: parentId,
+          finalizationRun: process.env.DSH_CI_RUN_ID,
+          finalizerRevision: process.env.GITHUB_SHA,
+        })
+        model.reviews = finalReadiness.reviews
+        if (finalReadiness.standard_change) model.standardChanges = [...model.standardChanges, finalReadiness.standard_change]
       }
-      finalReadiness = finalizeMvp(model, evidence, ownerConfirmation, {
-        sourceDigest, parentBaseline: parentId,
-        finalizationRun: opts.fixture ? 'fixture-finalization-1' : process.env.DSH_CI_RUN_ID,
-        finalizerRevision: opts.fixture ? evidence.bindings.verifier_config_revision : process.env.GITHUB_SHA,
-      })
-      model.reviews = finalReadiness.reviews
-      if (finalReadiness.standard_change) model.standardChanges = [...model.standardChanges, finalReadiness.standard_change]
       blockers.push(...finalReadiness.blocking)
-    } catch (error) { blockers.push(`MVP_READY owner finalization: ${error.message}`) }
+    } catch (error) { blockers.push(`MVP_READY finalization: ${error.message}`) }
   }
 
   // ---- 4. No open Critical violation, unknown or unconfirmed change --------
@@ -372,7 +409,14 @@ async function main() {
       limitations: model.contract.deployment?.environment_limitations || [],
     },
     evidence_refs: evidence ? [evidence.evidence_id] : [],
-    ...(finalReadiness?.ready ? { mvp_readiness_ref: `ci/recording/mvp-finalizations/${finalReadiness.finalization_run}.json`, owner_confirmation_ref: finalReadiness.owner_confirmation.reference } : {}),
+    ...(finalReadiness?.ready ? {
+      mvp_readiness_ref: `ci/recording/mvp-finalizations/${finalReadiness.finalization_run}.json`,
+      completion_mode: finalReadiness.completion_mode || 'human_review',
+      // Automatic acceptance cites the authenticated verification source; the human
+      // path keeps the owner comment reference. Neither is written for the other mode.
+      ...(finalReadiness.owner_confirmation ? { owner_confirmation_ref: finalReadiness.owner_confirmation.reference } : {}),
+      ...(finalReadiness.verification_reference ? { verification_reference: finalReadiness.verification_reference } : {}),
+    } : {}),
     promotion_run_id: process.env.DSH_CI_RUN_ID || 'local-dry-run',
     // Recorded so a later reader can tell an attested promotion from a
     // not-yet-attested one instead of inferring safety from a missing field.
@@ -466,9 +510,11 @@ async function main() {
       const finalizationPath = join(root, metadata.mvp_readiness_ref)
       mkdirSync(dirname(finalizationPath), { recursive: true })
       writeFileSync(finalizationPath, `${JSON.stringify(finalReadiness, null, 2)}\n`, { flag: 'wx' })
-      writeFileSync(join(root, '.agent', 'reviews.yaml'), `reviews: ${JSON.stringify(finalReadiness.reviews)}\n`)
+      // Historical owner receipts are never rewritten by an automatic delivery;
+      // the projection is only refreshed when this promotion carried real reviews.
+      if (Array.isArray(finalReadiness.reviews)) writeFileSync(join(root, '.agent', 'reviews.yaml'), `reviews: ${JSON.stringify(finalReadiness.reviews)}\n`)
       if (finalReadiness.standard_change) writeFileSync(join(root, '.agent', 'STANDARD_CHANGES.yaml'), `changes: ${JSON.stringify(model.standardChanges)}\n`)
-      writeFileSync(join(root, 'ci', 'mvp-ready.json'), `${JSON.stringify({ mvp_ready: true, baseline_id: baselineId, code_revision: metadata.code_revision, image_digest: metadata.environment.image_digest, deployment_id: metadata.environment.deployment_id, environment_kind: metadata.environment.validated_in, environment_limitations: metadata.environment.limitations, evidence_refs: metadata.evidence_refs, readiness_ref: metadata.mvp_readiness_ref, owner_confirmation_ref: metadata.owner_confirmation_ref, promotion_run_id: metadata.promotion_run_id }, null, 2)}\n`)
+      writeFileSync(join(root, 'ci', 'mvp-ready.json'), `${JSON.stringify({ mvp_ready: true, completion_mode: finalReadiness.completion_mode || 'human_review', baseline_id: baselineId, code_revision: metadata.code_revision, image_digest: metadata.environment.image_digest, deployment_id: metadata.environment.deployment_id, environment_kind: metadata.environment.validated_in, environment_limitations: metadata.environment.limitations, evidence_refs: metadata.evidence_refs, readiness_ref: metadata.mvp_readiness_ref, owner_confirmation_ref: metadata.owner_confirmation_ref ?? null, verification_reference: metadata.verification_reference ?? null, promotion_run_id: metadata.promotion_run_id }, null, 2)}\n`)
     }
     const accumulated = [...new Set([...loadSpine(root, cfg).caseIds, ...(evidence.scope.required_case_ids || [])])].sort()
     const spinePath = resolve(root, cfg.paths.spineManifest)
@@ -488,7 +534,8 @@ async function main() {
       const indexed = (args) => execFileSync('git', args, { cwd: root, env, encoding: 'utf8' }).trim()
       indexed(['read-tree', ...(stateParent ? [stateParent] : ['--empty'])])
       indexed(['add', '--', 'ci/baseline', 'ci/evidence', cfg.paths.spineManifest, cfg.paths.attemptsLog,
-        ...(finalReadiness?.ready ? ['.agent/reviews.yaml', 'ci/mvp-ready.json', metadata.mvp_readiness_ref] : []),
+        ...(finalReadiness?.ready ? ['ci/mvp-ready.json', metadata.mvp_readiness_ref] : []),
+        ...(finalReadiness?.ready && Array.isArray(finalReadiness.reviews) ? ['.agent/reviews.yaml'] : []),
         ...(finalReadiness?.ready && finalReadiness.standard_change ? ['.agent/STANDARD_CHANGES.yaml'] : [])])
       const tree = indexed(['write-tree'])
       stateCommit = indexed(['commit-tree', tree, ...(stateParent ? ['-p', stateParent] : []), '-m', `Persist ${baselineId} evidence and Spine`])

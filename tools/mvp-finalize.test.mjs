@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
+import { fileURLToPath } from 'node:url'
 import { decodeEvidence, draftOwnerApproval, parseOwnerComment, confirmOwnerApproval, finalizeMvp } from '../ci/tools/ci-mvp.mjs'
 import { sha256 } from '../packages/delivery-assured/scripts/lib/common.mjs'
 import { EVIDENCE_GATES } from '../packages/delivery-assured/scripts/lib/evidence.mjs'
@@ -137,6 +138,6 @@ const rebased = finalizeMvp(rebaseModel, rebaseRecord, envelope(rebaseDraft), { 
 check(rebased.ready && rebased.standard_change.confirmation_ref === reference, 'exact comparison target can be approved in the same authenticated owner receipt')
 const rebasedBudget = computeConvergence({ ...rebaseModel, standardChanges: [rebased.standard_change], evidence: [oldRecord, rebaseRecord], attempts: [...rebaseModel.attempts, attemptFromCI(rebaseRecord, rebaseModel)] }, { logExists: true, candidate: revision, parentBaseline: null })
 check(rebasedBudget.counted === 2 && rebasedBudget.terminal_passed && !rebasedBudget.blocked, 'comparison rebase preserves every old attempt and budget while admitting the new genuine PASS')
-const localFile = spawnSync(process.execPath, ['ci/tools/ci-promote.mjs', '--owner-approval', 'caller-approval.json', '--mode', 'MVP_READY'], { encoding: 'utf8', env: { ...process.env, GITHUB_ACTIONS: 'false' } })
+const localFile = spawnSync(process.execPath, [fileURLToPath(new URL('../ci/tools/ci-promote.mjs', import.meta.url)), '--owner-approval', 'caller-approval.json', '--mode', 'MVP_READY'], { encoding: 'utf8', cwd: fileURLToPath(new URL('..', import.meta.url)), env: { ...process.env, GITHUB_ACTIONS: 'false' } })
 check(localFile.status === 1 && localFile.stderr.includes('fixture-only'), 'real finalization rejects local caller-authored owner files before reading them')
 console.log(`mvp-finalize.test ok: ${checks} checks passed`)

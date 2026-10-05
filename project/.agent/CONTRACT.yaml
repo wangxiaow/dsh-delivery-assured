@@ -1,5 +1,5 @@
 schema_version: "0.5"
-contract_version: 3
+contract_version: 4
 status: approved
 product:
   id: delivery-assured
@@ -8,6 +8,14 @@ product:
   project_types: [cli]
   target_users: [solo_developer]
   release_goal: "内部演示（自用工具）；真实上线前提另立 Contract"
+
+# 普通交付的默认完成规则。本次用户授权把默认从“人工最终签收”改为“独立自动验收”：
+# 未声明时按 human_review 处理（缺字段不能变成自动放行），所以这里显式声明。
+completion_policy:
+  mode: independent_auto
+  authorization_ref: user-request:2026-02-default-auto-delivery
+  decided: "用户明确要求：既定需求和授权范围内正常流程不依赖逐步确认或最终人工签收；只有实质需求取舍、新增权限、费用或破坏性操作才需要询问。人工 Review 保留为用户主动选择的模式。"
+  scope: 默认完成规则；不改变任何 Journey 的可观察结果，也不降低任何断言或验收集合
 
 journeys:
   - id: J-DELIVERY-STATUS
@@ -35,6 +43,22 @@ journeys:
         required: true
         observable: 未取得远端权限或 CI 不可用时，报告明确阻塞而不是把本地绿灯当作完成
 
+  - id: J-AUTO-DELIVERY
+    title: 提出需求后自动交付，并在中断或后续修改后继续同一条链路
+    required: true
+    source_refs: ["user:2026-02-default-auto-delivery", "intent:auto-delivery"]
+    outcomes:
+      - id: J-AUTO-DELIVERY.accepted
+        required: true
+        observable: 包含本仓库在内的普通交付默认由实际执行的独立验收判定完成，不需要 owner 评论、手改回执或运行脚本；无法自动验证的部分在结论里明确标为限制
+      - id: J-AUTO-DELIVERY.recovered
+        required: true
+        observable: 新会话读追加式迭代日志与重算摘要即可恢复当前需求、已完成项、阻塞与剩余预算，不重算成功、不清零失败历史
+    exceptional_outcomes:
+      - id: J-AUTO-DELIVERY.no_false_pass
+        required: true
+        observable: 缺 Required case、skip、失败、绑定过期或发布前提未被平台观测到时，自动验收不产出 PASS，并逐条给出阻塞原因
+
 capabilities:
   - id: C-INPUT-DIAGNOSTICS
     required: true
@@ -42,6 +66,12 @@ capabilities:
   - id: C-STATUS-COMPUTATION
     required: true
     observable: 同一仓库上，delivery status 与 scripts/coverage.mjs 对同一义务给出相同状态与依据
+  - id: C-AUTO-COMPLETION
+    required: true
+    observable: Contract 声明的完成策略被实际执行：independent_auto 只由精确版本上的实际执行记录与平台观测判定；human_review 仍要求真实人工回执，自动模式不生成 owner 回执
+  - id: C-RECOVERY
+    required: true
+    observable: 追加式迭代日志保留每次需求、结论与阻塞，重启或换会话后可从中恢复当前迭代，且未执行的完成声明被拒绝
   - id: C-BOOTSTRAP
     required: true
     observable: 生产式容器可干净启动，迁移入口可执行，声明的验证环境（本仓库为 production_like_ci，非独立 staging）健康检查报告实际版本
@@ -71,6 +101,19 @@ business_rules:
       positive: [status_from_contract_and_ci]
       negative: [stale_evidence_not_verified, local_pass_not_verified]
       forbidden_effects: [state_done_treated_as_completion]
+
+  - id: BR-AUTO-EVIDENCE-ONLY
+    required: true
+    severity: standard
+    rule: 自动验收只能由精确候选上的实际执行结果与平台观测构成；声明、模型结论、未执行项或未观测到的前提都不构成通过
+    subjects: [implementer, automatic_reviewer, promotion_job]
+    resources: [acceptance_case, evidence_record, release_observation]
+    operations: [close_delivery]
+    boundaries: [executed, missing_or_skipped, unverified_observation]
+    acceptance_requirements:
+      positive: [complete_execution_can_close]
+      negative: [missing_case_blocks, skipped_case_blocks, unverified_observation_blocks]
+      forbidden_effects: [declared_pass_without_execution]
 
 implicit_obligations:
   - checklist_id: CLI-INPUT
@@ -150,6 +193,15 @@ unknowns:
     scope: 环境选择；不改变任何 Journey 的可观察结果
     approval_ref: DEC-8
 
+  - id: U-COMPLETION-POLICY
+    question: 普通交付的默认完成规则是否仍要求 owner 最终 Journey Review？
+    affects: [C-AUTO-COMPLETION, J-AUTO-DELIVERY, deployment]
+    impact: 决定默认终态门槛，以及正常路径是否依赖人工评论或手写回执
+    suggested_default: 默认独立自动验收，人工 Review 作为用户主动选择的模式
+    status: resolved
+    decision: 默认改为 independent_auto：由实际执行记录与平台观测判定完成；人工 Review 只在用户明确选择时使用。本次授权取代 v0.5 的固定三处人工触点，但不降低任何断言或验收集合
+    approval_ref: user-request:2026-02-default-auto-delivery
+
 approved_assumptions: []
 
 out_of_scope:
@@ -173,27 +225,37 @@ deployment:
   environment_limitations:
     - "本仓库没有独立 staging 通道：验证在受保护 CI runner 上安装并运行打包产物，报告 revision 与 digest"
     - "不提供容器/命名空间级隔离；隔离后端仍是欠账，runtime_isolation 只作为告警记录在 Baseline 元数据"
+    - "自动验收只覆盖机器可观察结果：交互易用性等主观判断不在自动结论内，需要时由用户主动发起人工评审"
   release_prerequisites:
-    - "远端仓库与 CI 权限可用，verify.yml 与 promote.yml 已生效"
-    - "refs/heads/baseline/main 由 Promotion job 建立并可读"
-    - "分支保护要求 verify 必需检查通过"
+    - id: verify-required-checks
+      description: "main 的两项必需检查在该候选版本上实际通过"
+      verification: required_check_runs_on_candidate
+      expects: ["structural checks", "verify candidate"]
+    - id: baseline-ref-readable
+      description: "受保护 Baseline 引用存在且指向不可变版本"
+      verification: baseline_ref_readable
+      ref: "refs/heads/baseline/main"
+    - id: verification-workflow-active
+      description: "验证工作流处于启用状态"
+      verification: verification_workflow_active
+      workflow: "verify.yml"
   operational_acceptance_ids: ["A-CLI-STATUS-JSON", "A-CLI-DOES-NOT-WRITE"]
 
 acceptance:
   manifest_ref: tests/acceptance/spec/manifest.yaml
   protected_revision: "frozen-at-first-standard-update"
-  manual_reviews:
+  # independent_auto 不允许悄悄保留人工签收；R-CORE-JOURNEYS 的 ID、义务映射与结果
+  # 标准由自动执行映射承接，历史人工记录保存在 durable state 中不被改写。
+  manual_reviews: []
+  automated_reviews:
     - id: R-CORE-JOURNEYS
-      obligation_ids: [J-DELIVERY-STATUS.ready, C-INPUT-DIAGNOSTICS]
-      stage: before_mvp_ready
-      reviewer: product_owner
-      target_method: retained_artifact_replay_with_ci_observation
-      approval_ref: DEC-10
-      target_limitations: CI 临时实例已清理；owner 在全新本地目录实走同一不可变候选/镜像，并评审原 CI 观测。回执分别标识原 CI 安装与实际本地评审实例，不能声称在旧 CI 实例上做过现场操作
+      obligation_ids: [J-DELIVERY-STATUS.ready, C-INPUT-DIAGNOSTICS, C-STATUS-COMPUTATION, C-AUTO-COMPLETION, C-RECOVERY, BR-AUTO-EVIDENCE-ONLY]
+      case_ids: ["A-CLI-STATUS-JSON", "A-CLI-DOES-NOT-WRITE", "A-CLI-INPUT-REJECTED", "A-BOOTSTRAP-CLEAN-BOOT", "A-AUTO-POLICY-DEFAULT", "A-AUTO-NO-FALSE-PASS", "A-ITERATION-RECOVERY"]
+      limitation: "机器可观察结果；不含主观易用性与交互感受判断"
 
 approval:
   status: approved
   unknowns_decision_ref: DEC-1..DEC-6 与 DEC-8（docs/ELICITATION.md 与 docs/INTENT.md 的正式澄清表）
   acceptance_summary_ref: DEC-7（原 Required 验收摘要保持不变）
-  review_target_ref: DEC-10（仅批准最终人工评审方式，不授予 Review PASS）
+  review_target_ref: "DEC-10 已被 user-request:2026-02-default-auto-delivery 取代：历史记录保留，不再作为默认终态门槛；人工 Review 改为用户主动选择的模式"
   effective_revision: "形成受保护提交流程后由 CI 解析，不由 Agent 宣告"

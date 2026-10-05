@@ -256,3 +256,48 @@ export function readTextIfExists(path) {
     return null
   }
 }
+
+/**
+ * Locate the GitHub CLI. The CI request interface shells out to it rather than
+ * handling a token itself: the session's existing credentials stay where the
+ * platform put them, and this plugin never reads or logs a secret.
+ */
+export function resolveGhBin(config = {}) {
+  const candidates = [config.ghBin, process.env.DSH_DELIVERY_GH, 'gh'].filter(Boolean)
+  for (const candidate of candidates) {
+    if (isAbsolute(candidate) && existsSync(candidate)) return candidate
+    const found = which(candidate)
+    if (found) return found
+  }
+  return null
+}
+
+/**
+ * Run one command through the session's own shell seam and collect its result.
+ * Used for `gh`; the same resolve/execute/result contract as `runScript`.
+ */
+export async function runCommand(ctx, shell, argv, { workdir = null, timeoutMs = 120000 } = {}) {
+  const command = buildCommandLine(argv[0], argv.slice(1))
+  const spec = shell.resolve({
+    command,
+    workdir: workdir || ctx.project?.root || process.cwd(),
+    timeoutMs,
+    ...(ctx.signal ? { signal: ctx.signal } : {}),
+    ...(ctx.sandboxPolicy ? { sandboxPolicy: ctx.sandboxPolicy } : {}),
+  })
+  const handle = await shell.execute(spec)
+  const result = typeof handle?.result === 'function' ? await handle.result() : handle
+  return {
+    exit_code: result.exitCode,
+    stdout: String((result.stdout && result.stdout.text) || ''),
+    stderr: String((result.stderr && result.stderr.text) || ''),
+    timed_out: result.timedOut === true,
+  }
+}
+
+/** Run the GitHub CLI with the resolved executable, never exposing a token. */
+export async function runGh(ctx, shell, args, options = {}) {
+  const bin = resolveGhBin(ctx.config || {})
+  if (!bin) throw new Error('the GitHub CLI (gh) was not found; set ghBin in the plugin config or DSH_DELIVERY_GH')
+  return runCommand(ctx, shell, [bin, ...args], options)
+}

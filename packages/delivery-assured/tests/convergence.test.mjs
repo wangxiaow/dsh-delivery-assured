@@ -107,6 +107,26 @@ test('last allowed trusted CI PASS is success, not exhausted failure', () => {
   assert.equal(b.blocked, false)
 })
 
+test('successful verification is retained but is not a repeated failure or stalled patch', () => {
+  const m = model()
+  m.cfg.budget.total_attempt_limit = 8
+  m.evidence = [1, 2, 3].map(n => {
+    const r = evidence({ evidence_id: `ci:success-${n}` })
+    r.execution = { ...r.execution, finished_at: `2026-01-01T00:00:0${n}Z` }
+    return r
+  })
+  const successful = compute(m)
+  assert.equal(successful.total, 3)
+  assert.equal(successful.maxSameRootCause, 0)
+  assert.equal(successful.noProgressStreak, 0)
+  // A different current candidate must be verified, not forced through Replan
+  // because previous candidates succeeded with the same verification hypothesis.
+  const next = computeConvergence(m, { logExists: true, candidate: 'd'.repeat(40) })
+  assert.equal(next.terminal_passed, false)
+  assert.equal(next.requiresReplan, false)
+  assert.equal(next.maxSameRootCause, 0)
+})
+
 test('a PASS on changed standards does not clear the fixed-comparison budget', () => {
   const m = model([attempt(1, { standard_digest: 'original-standard' }), attempt(2, { standard_digest: 'original-standard' })])
   m.evidence = [evidence()]

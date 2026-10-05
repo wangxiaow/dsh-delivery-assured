@@ -140,8 +140,8 @@ const toolNames = tools.map((t) => t.name)
 check('the helper verdict is one of the two documented outcomes', ['ok', 'refuse'].includes(verdict), `${verdict} (${defineToolModule.defineToolSource})`)
 if (verdict === 'ok') {
   check(
-    'registers exactly the five read-only tools',
-    toolNames.length === 5 && ['delivery_gaps', 'delivery_coverage', 'delivery_resume', 'delivery_attempts', 'delivery_verify_local'].every((n) => toolNames.includes(n)),
+    'registers the five read-only tools plus the two automatic-loop tools',
+    toolNames.length === 7 && ['delivery_gaps', 'delivery_coverage', 'delivery_resume', 'delivery_attempts', 'delivery_verify_local', 'delivery_iteration', 'delivery_ci'].every((n) => toolNames.includes(n)),
     toolNames.join(', '),
   )
 } else {

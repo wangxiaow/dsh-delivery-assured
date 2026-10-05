@@ -1,4 +1,4 @@
-revision: 1
+revision: 2
 # 受保护流程解析出的验收标准版本。由标准更新通路冻结，不由实现会话填写；冻结后
 # Candidate 的 spec/ 必须与之逐字节一致（见 ci/tools/ci-spec-diff.mjs 与 verify 的结构检查）。
 protected_revision: "frozen-by-standards-update-job"
@@ -116,3 +116,47 @@ cases:
     critical_scenarios: [no_silent_pass]
     environments: [production_like_container, staging]
     spec_ref: tests/acceptance/spec/input-rejected.spec.mjs
+  - id: A-AUTO-POLICY-DEFAULT
+    obligation_ids: [C-AUTO-COMPLETION, J-AUTO-DELIVERY]
+    outcome_ids: [J-AUTO-DELIVERY.accepted]
+    required: true
+    method: automated
+    actors: [solo_developer, automatic_reviewer]
+    preconditions: [declared_completion_policy, undeclared_policy, leftover_human_review]
+    action: resolve_the_completion_rule_for_each_contract
+    assertions: [complete_execution_can_close, declared_pass_without_execution, human_review_still_requires_real_review]
+    critical_scenarios: [declared_pass_without_execution]
+    environments: [production_like_container, staging]
+    spec_ref: tests/acceptance/spec/auto-completion.spec.mjs
+  - id: A-AUTO-NO-FALSE-PASS
+    obligation_ids: [BR-AUTO-EVIDENCE-ONLY, C-AUTO-COMPLETION]
+    outcome_ids: [J-AUTO-DELIVERY.no_false_pass]
+    required: true
+    method: automated
+    actors: [implementer, automatic_reviewer, promotion_job]
+    preconditions: [complete_execution_record, missing_case, skipped_case, unverified_release_observation]
+    action: assess_automatic_delivery_from_executed_records_only
+    assertions:
+      - complete_execution_can_close
+      - missing_case_blocks
+      - skipped_case_blocks
+      - unverified_observation_blocks
+      - declared_pass_without_execution
+    critical_scenarios:
+      - missing_case_blocks
+      - skipped_case_blocks
+      - unverified_observation_blocks
+    environments: [production_like_container, staging]
+    spec_ref: tests/acceptance/spec/auto-completion.spec.mjs
+  - id: A-ITERATION-RECOVERY
+    obligation_ids: [C-RECOVERY, J-AUTO-DELIVERY]
+    outcome_ids: [J-AUTO-DELIVERY.recovered]
+    required: true
+    method: automated
+    actors: [solo_developer]
+    preconditions: [open_iteration, blocked_iteration, closed_previous_iteration]
+    action: recover_the_iteration_after_a_restart
+    assertions: [requirement_recovered, blocking_reason_recovered, history_preserved, unexecuted_completion_refused]
+    critical_scenarios: [unexecuted_completion_refused]
+    environments: [production_like_container, staging]
+    spec_ref: tests/acceptance/spec/auto-completion.spec.mjs

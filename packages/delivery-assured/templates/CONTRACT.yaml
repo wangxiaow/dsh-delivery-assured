@@ -74,20 +74,40 @@ deployment:
   release_target: "<本次发布目标>"
   mail_channel: "<已确认的投递方式，或 not_applicable>"
   environment_sensitive_paths: ["<回调、provider、部署、迁移配置路径>"]
-  release_prerequisites: ["<根据发布目标填写必要前提，不接受无意义占位符>"]
+  environment_limitations: ["<自动验收覆盖不到的部分，例如主观易用性；必须如实声明>"]
+  # 每项前提都要能被机器观测，并声明观测方式；无法观测的前提不会被默认满足。
+  release_prerequisites:
+    - id: verify-required-checks
+      description: "<该发布目标要求哪些必需检查在候选版本上实际通过>"
+      verification: required_check_runs_on_candidate
+      expects: ["<必需检查名称>"]
+    - id: baseline-ref-readable
+      description: "受保护 Baseline 引用存在且指向不可变版本"
+      verification: baseline_ref_readable
+      ref: "refs/heads/baseline/<project>"
   operational_acceptance_ids: ["<Acceptance 会话生成后填入>"]
+
+# 默认完成规则。未声明按 human_review 处理（缺字段不能变成自动放行）。
+# independent_auto：由精确版本上的实际执行与平台观测判定，不需要人工签收。
+# human_review：需要真实人工评审记录（不能由 Agent 伪造）。
+completion_policy:
+  mode: independent_auto
+  authorization_ref: "<用户授权或需求确认记录；自动模式必须留痕>"
+  decided: "<这次授权改变了什么默认规则>"
+  scope: "<只改变完成规则，不改变任何可观察结果或断言>"
 
 acceptance:
   manifest_ref: tests/acceptance/spec/manifest.yaml
   protected_revision: "<受保护标准形成后由流程解析>"
-  manual_reviews:
+  manual_reviews: []                 # human_review 模式下必填；independent_auto 下必须为空
+  automated_reviews:
     - id: R-<ID>
-      obligation_ids: [<Journey / Capability ID>]
-      stage: before_mvp_ready
-      reviewer: product_owner
+      obligation_ids: ["<Journey / Capability / Rule ID>"]
+      case_ids: ["<受保护的 Required 验收 case>"]
+      limitation: "<自动结论覆盖不到的部分>"
 
 approval:
   status: pending                  # pending / approved
-  unknowns_decision_ref: "<第一处人工触点记录>"
-  acceptance_summary_ref: "<第二处人工触点记录>"
+  unknowns_decision_ref: "<Unknowns 决定记录>"
+  acceptance_summary_ref: "<验收标准确认记录>"
   effective_revision: "<受保护流程生成，不由 Agent 宣告批准>"

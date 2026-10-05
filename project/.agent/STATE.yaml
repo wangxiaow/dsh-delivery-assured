@@ -1,35 +1,27 @@
 # Editable recovery hints, never a completion ledger or CI evidence.
-current_slice: S1
-candidate_revision: "Derived from Git by resume; current fixes are uncommitted"
+current_slice: S2
+candidate_revision: "Derived from Git by resume; current changes are an unverified Candidate"
 baseline_ref: "refs/heads/baseline/main"
-last_ci_run: "No authenticated verification or promotion result was obtained in this repair session"
+last_ci_run: "No authenticated verification or promotion result was obtained for S2 yet"
 
 blockers:
-  - "No trusted Baseline metadata or current CI Evidence is available locally"
-  - "origin/main and origin/standards/acceptance exist as local tracking refs; remote permissions and branch protection were not checked"
-  - "The protected attempt ledger is missing; history must be explicitly established, not assumed empty"
-  - "Candidate runtime isolation backend is not implemented or independently attested; real promotion stays fail-closed"
-  - "Single-missing reconciliation requests and counted-failure resolution are implemented locally but not verified on the actual platform; uncounted or unrecoverable runs stay blocked"
-  - "No actual staging deployment observation or owner final Journey Review is available"
-  - "MVP_READY remains blocked by the current Contract and release prerequisites"
+  - "S2 的新 Required case 尚未在受保护 CI 上执行；本地通过不是证据"
+  - "默认完成策略已改为 independent_auto，但真实自动晋升仍需一次成功的 verify 与一次不带 owner 评论的 promote"
+  - "Candidate runtime isolation backend is not implemented or independently attested"
+  - "自动验收不覆盖主观易用性：需要时由用户主动发起人工评审"
+  - "No actual staging deployment observation is available; this project declares production_like_ci"
 
 completed_local_work:
-  - "Added complete Evidence validation, fixed-set accounting, current-run tokens and Required Journey-result aggregation"
-  - "Added regression cases for missing bindings, unexecuted cases, structural failures, duplicate results and post-promotion Spine binding"
-  - "Unified attempts and resume convergence diagnostics; undeclared history and changed comparison sets fail closed"
-  - "Added reusable INTENT and ELICITATION templates and a project Global Kernel"
-  - "CI paths, fixed revisions, artifact retention and conditional durable state/promotion logic have local fixture checks"
+  - "新增 completion_policy 与 automated_reviews：默认独立自动验收，未声明按 human_review 处理"
+  - "新增 ci-auto-mvp.mjs 与 ci-release-observer.mjs：自动终态只读实际执行记录与平台观测，观测失败一律 UNVERIFIED"
+  - "修正预算规则：成功执行仍计入历史与总量，但不再计入同根因失败或无进展窗口"
+  - "新增 DSH 入口：delivery_iteration 追加式迭代日志、delivery_ci 明确输入的工作流派发与观测"
+  - "新增受保护验收 case A-AUTO-POLICY-DEFAULT / A-AUTO-NO-FALSE-PASS / A-ITERATION-RECOVERY，并纳入构建门回归"
 
 how_decisions:
-  - "Required obligations and protected acceptance spec assertions are unchanged"
-  - "Verification and Coverage select the frozen Slice plus accumulated Spine and applicable Critical cases; future Slices are not a current execution failure"
-  - "PASS is rejected when any structural check, gate, case accounting or mandatory binding is incomplete"
-  - "Promotion transport provenance and runtime isolation must be independently attested; local fixtures are confined to temporary local bare repositories"
-  - "Artifact packaging preserves import-relative paths and does not invent a running deployment identity"
-  - "Local diagnostic test runs do not issue CI Evidence, advance a real Baseline or reset an attempt budget"
-  - "Precheck and resolution bind all restored ledger/Spine/recording/evidence/Baseline metadata bytes to one state SHA; equality of the ledger alone cannot hide state-only diagnostic changes"
-  - "Docker isolation requests are restricted and permanently untrusted; a fake or actual zero exit is not runtime attestation, and no real executor is wired"
-  - "Checklist lookup converts file URLs with fileURLToPath; space/Unicode/hash installation paths and the real project override are independently regression-tested"
-  - "Bootstrap rejects raw orphan history in empty seeds; existing seed graphs need independent exact-source confirmation and retain original receipts/diagnostics/resolutions plus archived seed markers; no isolation authority is imported"
+  - "Required obligations、既有 spec 断言与 Spine 集合未删除或弱化；S1 的 8 个 case 继续全量重验"
+  - "历史 attempts（4 次 Candidate attempt、1 次 Replan）、旧 owner 记录与 Evidence 原样保留，未清零或改写"
+  - "自动验收不生成 owner 回执；人工模式的反伪造约束完全保留"
+  - "成功执行不构成失败累计，但历史与总预算仍然累计，避免用成功掩盖反复失败"
 
-next_action: "Local checks passed; integrate and independently verify an operational runtime isolation backend, address uncounted history recovery, and verify real reconciliation/resolution approvals, protected identities, owner-confirmed initial history and staging/Review before real promotion"
+next_action: "提交并把标准快进到同一 SHA，派发 verify（S2，父基线 BL-001），等 collector 落账后派发不带 owner 评论的 MVP_READY 晋升"

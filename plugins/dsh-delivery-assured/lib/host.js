@@ -10,7 +10,9 @@
  */
 
 import { defineTool, defineToolIsPassThrough, defineToolSource, defineToolVerdict, defineToolVerdictReason, schemaIsProviderSafe } from './define-tool.js'
-import { buildContext, resolvePackRoot, resolveProjectRoot, runScript, summarize } from './bridge.js'
+import { buildContext, resolvePackRoot, resolveProjectRoot, runGh, runScript, summarize } from './bridge.js'
+import { appendIteration, loadIterations, nextIterationId, reduceIterations, summarizeRecovery } from './iterations.js'
+import { observeRun, requestRun } from './ci-request.js'
 import { buildGuard } from './guard.js'
 import { createKernel } from './kernel.js'
 import { SKILL_DESCRIPTION, SKILL_MARKDOWN, SKILL_NAME, SKILL_WHEN_TO_USE } from './skill.js'
@@ -251,6 +253,136 @@ export function apply(ctx, config = {}) {
           project: ready.ctx.project.root,
           reminder:
             'Local diagnostics never unlock a Baseline. Push the frozen candidate and read the real CI result to advance it.',
+        }
+      },
+    }),
+  )
+
+  // ----------------------------------------------------------------- delivery loop
+  // Two write-capable tools close the automatic loop in a DSH session: one records
+  // the durable iteration journal, one asks the platform to run a frozen workflow and
+  // reports what happened. Neither can produce Evidence or move a Baseline — a
+  // Baseline moves only inside the promotion job, which this plugin holds no
+  // credential for. Both are deliberate narrow interfaces, not a general shell.
+  register(
+    defineTool({
+      name: 'delivery_iteration',
+      description:
+        'Open, record or read the durable iteration journal (.agent/ITERATIONS.jsonl). This is how a new session recovers the current requirement, what was already done and what blocked, without the user repeating it: action=open with the user requirement verbatim, note for a decision or progress fact, verified only with an evidence reference actually observed, blocked with the concrete reason, close when the delivery is finished. action=status joins the journal with the recomputed resume summary. Append-only and non-authoritative: it never writes Evidence, never advances a Baseline and never marks a delivery complete.',
+      parameters: {
+        action: {
+          type: 'string',
+          description: 'open: start an iteration from the user requirement. note/verified/blocked/close: append a fact to the current one. status: read the journal plus the recomputed recovery summary.',
+          enum: ['open', 'note', 'verified', 'blocked', 'close', 'status'],
+          required: true,
+        },
+        requirement: { type: 'string', description: 'The user requirement, verbatim and complete, for action=open.' },
+        detail: { type: 'string', description: 'Short factual note for action=note (decision, observed result, next step).' },
+        evidence_ref: { type: 'string', description: 'The CI run, evidence id or command output actually observed, for action=verified.' },
+        reason: { type: 'string', description: 'The concrete blocking condition, for action=blocked.' },
+        iteration: { type: 'string', description: 'Iteration id such as IT-002; defaults to the current open iteration.' },
+      },
+      output: { schema: { type: 'object', additionalProperties: true }, render: (args, value) => renderResult(value) },
+      async execute(args, exec) {
+        const ready = requireReady(exec)
+        if (!ready.ok) return ready
+        const root = ready.ctx.project.root
+        const loaded = loadIterations(root)
+        const reduced = reduceIterations(loaded.events)
+        const current = reduced.current
+        try {
+          if (args.action !== 'status') {
+            const id = args.iteration || current?.id
+            if (!id) return { ok: false, problems: ['no iteration is open; call action=open with the user requirement first'], authority: 'local_diagnostic' }
+            const at = new Date().toISOString()
+            const base = { id, at }
+            if (args.action === 'open') {
+              const opened = { ...base, id: nextIterationId(loaded.events), kind: 'opened', requirement: args.requirement, ...(current ? { iteration_of: current.id } : {}) }
+              appendIteration(root, opened)
+            } else if (args.action === 'note') appendIteration(root, { ...base, kind: 'noted', detail: args.detail })
+            else if (args.action === 'verified') appendIteration(root, { ...base, kind: 'verified', evidence_ref: args.evidence_ref })
+            else if (args.action === 'blocked') appendIteration(root, { ...base, kind: 'blocked', reason: args.reason })
+            else if (args.action === 'close') appendIteration(root, { ...base, kind: 'closed' })
+          }
+        } catch (error) {
+          return { ok: false, problems: [String(error?.message || error)], authority: 'local_diagnostic' }
+        }
+        const after = loadIterations(root)
+        const nextReduced = reduceIterations(after.events)
+        let resume = null
+        if (args.action === 'status') {
+          const result = await runScript(ready.ctx, ctx.shell, 'resume.mjs', ['--offline'])
+          resume = result.json || null
+        }
+        return {
+          ok: true,
+          action: args.action,
+          project: root,
+          iteration: nextReduced.current,
+          iterations: nextReduced.iterations.length,
+          unreadable_lines: after.problems.length,
+          recovery: summarizeRecovery({ iterations: nextReduced, problems: after.problems, resume }),
+          authority: 'local_diagnostic',
+          note: 'the journal is a resumable summary, not a completion record: only CI evidence and a promoted Baseline count',
+        }
+      },
+    }),
+  )
+
+  register(
+    defineTool({
+      name: 'delivery_ci',
+      description:
+        'Ask the platform to run one frozen workflow and report what it observed. action=request dispatches verify (with an exact frozen candidate SHA, parent baseline, Slice and falsifiable hypothesis) or promote (consuming one exact completed verify run). action=observe reads one exact run and its jobs. Never retried blindly on an ambiguous dispatch, never given baseline credentials, and a requested or completed run is never reported as a promotion: only the durable collector and the promotion job make a result real.',
+      parameters: {
+        action: { type: 'string', description: 'request: dispatch a workflow. observe: read one exact run.', enum: ['request', 'observe'], required: true },
+        workflow: { type: 'string', description: 'Which frozen workflow to ask for.', enum: ['verify', 'promote'] },
+        candidate: { type: 'string', description: 'Full 40-character commit SHA that was actually frozen, for workflow=verify.' },
+        parent_baseline: { type: 'string', description: 'Expected parent baseline id (BL-003) or none, for workflow=verify.' },
+        slice: { type: 'string', description: 'Approved Slice id from the frozen standards, for workflow=verify.' },
+        hypothesis: { type: 'string', description: 'The falsifiable hypothesis this attempt tests, for workflow=verify.' },
+        comparison_approval_ref: { type: 'string', description: 'Approved standard-comparison record, only when the frozen standard legitimately changed.' },
+        mode: { type: 'string', description: 'Promotion entry, for workflow=promote.', enum: ['promote-baseline', 'MVP_READY'] },
+        expected_parent: { type: 'string', description: 'Expected parent baseline id or none, for workflow=promote.' },
+        verify_run_id: { type: 'string', description: 'Exact completed verify run id the promotion consumes.' },
+        verify_run_attempt: { type: 'string', description: 'Exact verify attempt number the promotion consumes.' },
+        owner_approval_ref: { type: 'string', description: 'Owner confirmation reference, only for a project whose frozen policy is human_review.' },
+        run_id: { type: 'string', description: 'Exact run id to read, for action=observe.' },
+        repository: { type: 'string', description: 'owner/name; defaults to the configured repository or the project remote.' },
+      },
+      output: { schema: { type: 'object', additionalProperties: true }, render: (args, value) => renderResult(value) },
+      async execute(args, exec) {
+        const ready = requireReady(exec)
+        if (!ready.ok) return ready
+        const configured = config.ciRepo || process.env.DSH_DELIVERY_CI_REPO || null
+        let repository = args.repository || configured
+        const runner = (ghArgs) => runGh({ ...ready.ctx, config }, ctx.shell, ghArgs, { workdir: ready.ctx.project.root })
+        if (!repository) {
+          const discovered = await runner(['repo', 'view', '--json', 'nameWithOwner', '--jq', '.nameWithOwner'])
+          repository = discovered.exit_code === 0 ? discovered.stdout.trim() : null
+        }
+        if (!repository) {
+          return { ok: false, problems: ['no CI repository could be resolved; set ciRepo in the plugin config or DSH_DELIVERY_CI_REPO, or run inside a GitHub checkout'], authority: 'local_diagnostic' }
+        }
+        try {
+          if (args.action === 'observe') return { ok: true, authority: 'local_diagnostic', ...(await observeRun(runner, { repository, runId: args.run_id })) }
+          const result = await requestRun(runner, {
+            action: args.workflow,
+            repository,
+            candidate: args.candidate,
+            parent_baseline: args.parent_baseline,
+            slice: args.slice,
+            hypothesis: args.hypothesis,
+            comparison_approval_ref: args.comparison_approval_ref,
+            mode: args.mode,
+            expected_parent: args.expected_parent,
+            verify_run_id: args.verify_run_id,
+            verify_run_attempt: args.verify_run_attempt,
+            owner_approval_ref: args.owner_approval_ref,
+          })
+          return { ok: result.status !== 'refused', authority: 'local_diagnostic', ...result }
+        } catch (error) {
+          return { ok: false, problems: [String(error?.message || error)], authority: 'local_diagnostic' }
         }
       },
     }),

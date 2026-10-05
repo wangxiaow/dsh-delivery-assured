@@ -115,7 +115,7 @@ if (existsSync(DESKTOP_EXECUTABLE)) {
   void appManifest
 
   // The schema that would go to the provider: an object root, no null types.
-  check(Array.isArray(desktopResult.shapes) && desktopResult.shapes.length === 5, `five tool schemas are registered, got ${desktopResult.shapes?.length}`)
+  check(Array.isArray(desktopResult.shapes) && desktopResult.shapes.length === 7, `seven tool schemas are registered, got ${desktopResult.shapes?.length}`)
   for (const shape of desktopResult.shapes || []) {
     check(shape.rootType === 'object', `${shape.name}: the parameter schema is object-rooted (got ${shape.rootType})`)
     check(shape.nullTypes === 0, `${shape.name}: no null-typed node in the parameter schema`)

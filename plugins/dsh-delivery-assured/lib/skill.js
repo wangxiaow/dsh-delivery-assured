@@ -44,20 +44,25 @@ hand-written ledger.
    the remaining budget and the next verification step.
 3. Do not restate history from memory. Recompute it.
 
-## The three human touchpoints
+## Default completion: independent automatic acceptance
 
-The owner is asked at exactly three points, plus any real WHAT change:
+The frozen Contract declares the completion rule in \`completion_policy\`:
 
-1. **Unknowns Gate** — before planning: answer, exclude, or approve a bounded assumption.
-   No unresolved unknown may enter planning.
-2. **Acceptance summary confirmation** — before implementation: about ten minutes reading
-   the per-Journey results, the persistence requirements and the negative paths.
-3. **Final Journey Review** — before \`MVP_READY\`: the owner walks the core Journeys on the
-   named staging deployment using a fresh identity.
+- \`independent_auto\` (the default for new projects): the project closes from acceptance that
+  was actually executed on the frozen revision plus release prerequisites observed on the
+  platform. No owner comment, no hand-edited receipt and no script for the user to run.
+- \`human_review\`: a real human review record is required. An automatic run can never
+  manufacture one, and an undeclared policy means \`human_review\` — silence never makes a
+  project automatically deliverable.
 
-Ordinary HOW decisions, added tests inside the agreed semantics, and automatic promotion
-are not brought to the owner each time. Changing a product result, deleting an obligation
-or lowering a standard always is.
+Ask the user only when the decision is genuinely theirs: a substantive product trade-off
+(changing an observable result, a Critical rule's subject/resource/operation, or in/out of
+scope), a new permission, cost, or a destructive or irreversible operation. Ordinary HOW
+decisions, added tests inside agreed semantics and automatic promotion are yours to make.
+
+When acceptance cannot be automated, say so as a **limitation** in the delivery report
+(for example subjective usability). A limitation is not a pass, and it is never quietly
+dropped.
 
 ## The five phases
 
@@ -139,10 +144,26 @@ the acceptance, refresh Coverage and re-verify in full.
 
 Do not report a Slice as done because the local gates are green, and do not report the
 product as \`MVP_READY\` unless the whole Contract's Required results are implemented and
-mapped, every machine acceptance and the full Spine pass on the frozen revision, the real
-staging deployment runs that same candidate and image, the owner has completed the final
-Journey Review, and the declared release prerequisites are met.
+mapped, every machine acceptance and the full Spine pass on the frozen revision, the
+declared environment runs that same candidate and image, the declared completion rule is
+actually satisfied, and the declared release prerequisites were observed. Report what is
+still owed, what blocked, and how much budget is left — including the parts that could not
+be verified automatically. Never widen the claimed scope.
 
-Report what is still owed, what blocked, and how much budget is left. Never widen the
-claimed scope.
+## The automatic loop in a session
+
+1. \`delivery_iteration\` with \`action=open\` records the user's requirement verbatim; before
+   planning, re-read it with \`action=status\` so the requirement survives the session.
+2. \`delivery_gaps\` / \`delivery_coverage\` / \`delivery_resume\` / \`delivery_attempts\` tell you
+   what is owed, what is stale and how much budget is left. Recompute; never restate from memory.
+3. Implement, then verify locally for diagnosis (\`delivery_verify_local\`).
+4. \`delivery_ci\` with \`action=request\` asks the platform to run the frozen verification on the
+   exact candidate; \`action=observe\` reports the run and its jobs. A requested or completed run
+   is still not a promotion, and an ambiguous dispatch is never retried blindly.
+5. On a real failure, diagnose it, record the falsified assumption with \`action=note\` (or a
+   Replan Record when the approach must change), then form the next candidate. On a genuine
+   blocker, record it with \`action=blocked\` and report exactly what is needed.
+6. When everything the Contract requires has passed and the prerequisites were observed, ask
+   the promotion workflow to close the delivery. \`action=close\` records the outcome; it does
+   not create one.
 `

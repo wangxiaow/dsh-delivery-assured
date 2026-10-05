@@ -1,0 +1,39 @@
+id: S2
+title: 默认独立自动验收的交付闭环——完成策略、自动终态、平台观测与可恢复迭代
+status: LOCAL_VERIFY
+obligations:
+  - J-AUTO-DELIVERY
+  - C-AUTO-COMPLETION
+  - C-RECOVERY
+  - BR-AUTO-EVIDENCE-ONLY
+outcomes:
+  - J-AUTO-DELIVERY.accepted
+  - J-AUTO-DELIVERY.recovered
+  - J-AUTO-DELIVERY.no_false_pass
+acceptance:
+  - A-AUTO-POLICY-DEFAULT
+  - A-AUTO-NO-FALSE-PASS
+  - A-ITERATION-RECOVERY
+depends_on:
+  - S1
+baseline: "BL-001（S1 已完成并晋升：Contract v3 上 8 个 Required 与 8 个 Spine 真实通过）"
+preserve:
+  - 五个脚本与 CLI 的退出码约定 0/1/2
+  - scripts/coverage.mjs 与 delivery status 对同一义务给出相同状态
+  - 权威边界：本地不产出 Evidence，不推进 baseline 引用，自动验收不生成 owner 回执
+  - S1 的 8 个 Required case 继续作为 Spine 全量重验，不在本 Slice 中弱化
+  - 历史 attempts（4 次 Candidate attempt、1 次 Replan）与旧 owner 记录原样保留，不清零、不改写
+code_conventions:
+  - "完成策略：唯一来源是 Contract 的 completion_policy；未声明按 human_review 处理，绝不因缺字段自动放行"
+  - "自动终态：只读精确执行的 Evidence 与平台观测，输入对象不被修改；缺执行、skip、失败、绑定过期、观测未达成一律阻塞"
+  - "平台观测：只用只读令牌读取平台事实；HTTP 失败、权限不足、未知前提一律 UNVERIFIED，不默认 PASS"
+  - "恢复：迭代日志追加式写入 .agent/ITERATIONS.jsonl，重启后从磁盘重算；损坏行如实报告，不静默丢弃"
+  - "DSH 入口：会话只请求工作流并读取结果，不持有 Baseline 凭据；歧义派发不盲目重试"
+attempt_budget:
+  same_root_cause_limit: 3
+  total_attempt_limit: 8
+  no_progress_window: 3
+  replan_limit: 2
+migration_steps:
+  - "Contract v3 → v4：新增 completion_policy、automated_reviews、平台可观测的 release_prerequisites 与 J-AUTO-DELIVERY 义务；旧 REVIEW 记录与 Evidence 不改写，历史人工模式记录保留在 durable state"
+external_side_effects: []

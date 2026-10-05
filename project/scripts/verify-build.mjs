@@ -90,6 +90,13 @@ const pluginTests = [
   // invalid function schema, so the runtime the plugin compiles against is a contract.
   { label: 'host helper resolution', file: join(pluginRoot, 'test', 'host-resolution.test.mjs'), requires: 'dsh-runtime' },
   { label: 'One-command install', file: join(repoRoot, 'tools', 'install-plugin.test.mjs'), requires: 'none' },
+  { label: 'plugin automation interfaces', file: join(pluginRoot, 'test', 'automation.test.mjs'), requires: 'none' },
+  // Automatic completion is a delivery rule, so its regressions run in the build gate:
+  // the finalizer, the platform release observations and the MVP receipt must all be
+  // executed before a Candidate is ever called verified.
+  { label: 'Automatic completion finalization', file: join(repoRoot, 'tools', 'auto-finalize.test.mjs'), requires: 'none' },
+  { label: 'Release prerequisite observation', file: join(repoRoot, 'tools', 'release-observer.test.mjs'), requires: 'none' },
+  { label: 'Owner-receipt finalization', file: join(repoRoot, 'tools', 'mvp-finalize.test.mjs'), requires: 'none' },
   // The workflows cannot run without a remote, so a wrong `node <path>` inside them
   // would otherwise stay invisible until the first push. This check runs here.
   { label: 'CI preflight', file: join(repoRoot, 'tools', 'ci-preflight.test.mjs'), requires: 'none' },
@@ -138,7 +145,7 @@ if (!existsSync(pluginRoot)) {
   }
 }
 
-for (const file of ['evidence.test.mjs', 'verification.test.mjs', 'convergence.test.mjs']) {
+for (const file of ['evidence.test.mjs', 'verification.test.mjs', 'convergence.test.mjs', 'completion.test.mjs']) {
   const result = spawnSync(process.execPath, [join(packRoot, 'tests', file)], { cwd: root, encoding: 'utf8' })
   if (result.status !== 0) failures.push(`${file} failed: ${failureDetail(result)}`)
 }

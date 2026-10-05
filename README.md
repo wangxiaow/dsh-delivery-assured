@@ -226,9 +226,10 @@ secrets 是否存在。那些只有真实推送才能验证。
 | `J-*` / `C-*` / `BR-*` | Journey / Capability / Business Rule 的稳定 ID |
 | `A-*` / `R-*` | 受保护验收 case / 人工 Review |
 | `BL-nnn` | Baseline ID，只由 Promotion job 推进 |
-| 尝试预算 | `same_root_cause_limit: 3`、`total_attempt_limit: 8`、`no_progress_window: 3`、`replan_limit: 2` |
+| 尝试预算 | `same_root_cause_limit: 3`、`total_attempt_limit: 8`、`no_progress_window: 3`、`replan_limit: 2`；成功执行留在历史里但不计入同根因失败 |
 | 退出码 | `0` 通过、`1` 阻塞/失败、`2` 输入或工具错误 |
-| 三处常规人工触点 | Unknowns Gate（规划前）、验收摘要确认（实现前）、最终 Journey Review（`MVP_READY` 前）；另加任何真实 WHAT 变更需再次确认 |
+| 完成规则 | Contract 的 `completion_policy`：默认 `independent_auto`（实际执行 + 平台观测判定，无需人工签收）；未声明按 `human_review` 处理；人工 Review 是用户主动选择的模式 |
+| DSH 入口 | `delivery_iteration`（追加式迭代日志/恢复）、`delivery_ci`（按明确输入派发并观测 CI），加上原有五个只读诊断工具 |
 
 ## 贡献
 

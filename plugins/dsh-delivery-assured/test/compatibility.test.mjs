@@ -231,8 +231,8 @@ async function runTarget({ label, nodeModules }) {
     { packRoot: process.env.DSH_DELIVERY_PACK, projectRoot: process.env.DSH_DELIVERY_PROJECT },
   )
 
-  check('five tools registered', registered.length === 5, `registered ${registered.length}`)
-  const expectedNames = ['delivery_gaps', 'delivery_coverage', 'delivery_resume', 'delivery_attempts', 'delivery_verify_local']
+  check('seven tools registered', registered.length === 7, `registered ${registered.length}`)
+  const expectedNames = ['delivery_gaps', 'delivery_coverage', 'delivery_resume', 'delivery_attempts', 'delivery_verify_local', 'delivery_iteration', 'delivery_ci']
   const names = registered.map((t) => t.name)
   check('tool names are stable', expectedNames.every((n) => names.includes(n)), names.join(', '))
 

@@ -46,6 +46,7 @@ import {
   isPlaceholder,
   loadModel,
 } from './lib/model.mjs'
+import { automatedReviewDefinitions, checkCompletionPolicy, resolveCompletionPolicy } from './lib/completion.mjs'
 
 const PHASES = ['contract', 'acceptance', 'slice', 'mvp']
 
@@ -78,6 +79,7 @@ function main() {
   checkChecklistDispositions(model, issues)
   checkUnknowns(model, issues, phaseScope)
   checkDeploymentDecisions(model, issues, phaseScope)
+  checkCompletionPolicy(model, issues, phaseScope)
 
   if (phase === 'contract') {
     checkContractPlaceholders(model, issues)
@@ -356,7 +358,8 @@ function checkMvpReadiness(model, issues) {
   const candidate = gitRevision(model.root, 'HEAD')
   const parentBaseline = model.baselines.at(-1)?.baseline_id || null
   const trustedIssuer = model.cfg.ci?.trusted_issuer
-  const manualReviews = model.contract.acceptance?.manual_reviews || []
+  const completionPolicy = resolveCompletionPolicy(model.contract)
+  const manualReviews = completionPolicy.mode === 'independent_auto' ? [] : model.contract.acceptance?.manual_reviews || []
   for (const review of manualReviews) {
     const recorded = model.reviews.find((r) => r.review_id === review.id || r.review_id === review.id)
     if (!recorded) {
@@ -397,6 +400,24 @@ function checkMvpReadiness(model, issues) {
   }
 
   const automated = model.acceptance.cases.filter((c) => c.required === true && c.method === 'automated')
+  // Automatic completion proves itself from the same records the machine gate uses:
+  // each case named by an automated review must have a current trusted PASS. There is
+  // no free-form "reviewed" flag that could close the project instead.
+  if (completionPolicy.mode === 'independent_auto') {
+    for (const definition of automatedReviewDefinitions(model.contract)) {
+      for (const caseId of definition.case_ids || []) {
+        const proof = proveCase(model, caseId, { codeRevision: candidate, parentBaseline, trustedIssuer })
+        if (!proof?.fresh || proof.outcome !== 'passed') {
+          issues.push({
+            level: 'fail',
+            code: 'AUTO_REVIEW_CASE_NO_EVIDENCE',
+            message: `automated review ${definition.id} case ${caseId} has no current complete record naming the configured CI issuer`,
+            id: caseId,
+          })
+        }
+      }
+    }
+  }
   const missingEvidence = []
   for (const testCase of automated) {
     const proof = proveCase(model, testCase.id, { codeRevision: candidate, parentBaseline, trustedIssuer })
@@ -438,7 +459,7 @@ function checkMvpReadiness(model, issues) {
         id: latest.baseline_id,
       })
     }
-    if (latest.verification_scope?.manual_reviews_pending?.length) {
+    if (completionPolicy.mode !== 'independent_auto' && latest.verification_scope?.manual_reviews_pending?.length) {
       issues.push({
         level: 'fail',
         code: 'MANUAL_REVIEWS_PENDING',

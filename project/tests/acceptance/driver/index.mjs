@@ -15,7 +15,7 @@ import { spawnSync } from 'node:child_process'
 import { cpSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync, mkdirSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 
 const here = dirname(fileURLToPath(import.meta.url))
 /** tests/acceptance/driver → repository root */
@@ -392,6 +392,92 @@ export function gitRefs(dir) {
   const result = spawnSync('git', ['for-each-ref', '--format=%(refname)'], { cwd: dir, encoding: 'utf8' })
   if (result.status !== 0) return []
   return result.stdout.split('\n').map((line) => line.trim()).filter(Boolean)
+}
+
+/* ------------------------------------------- automatic completion observation */
+
+/**
+ * The shipped delivery toolchain, as it exists in the staged verification tree:
+ * protected packages, protected CI tools and the DSH plugin. The specs observe
+ * their *decisions*; nothing here decides pass/fail for them.
+ */
+const STAGED_ROOT = join(PROJECT_ROOT, '..')
+const PACK_LIB = join(STAGED_ROOT, 'packages', 'delivery-assured', 'scripts', 'lib')
+const CI_TOOLS = join(STAGED_ROOT, 'ci', 'tools')
+const PLUGIN_LIB = join(STAGED_ROOT, 'plugins', 'dsh-delivery-assured', 'lib')
+
+const loadModule = async (path) => import(pathToFileURL(path).href)
+
+/** What the frozen Contract's completion policy resolves to, and which gaps it has. */
+export async function completionPolicyObservation(contract, { model = null, phase = 'contract' } = {}) {
+  const completion = await loadModule(join(PACK_LIB, 'completion.mjs'))
+  const resolved = completion.resolveCompletionPolicy(contract)
+  if (!model) return { resolved, issues: [] }
+  const issues = []
+  completion.checkCompletionPolicy(model, issues, { phase })
+  return { resolved, issues }
+}
+
+/** What the shipped automatic finalizer decides for one exact execution record. */
+export async function autoFinalizationObservation({ model, record, receipt, options }) {
+  const { finalizeAutoMvp } = await loadModule(join(CI_TOOLS, 'ci-auto-mvp.mjs'))
+  const before = JSON.stringify({ model, record, receipt, options })
+  const result = finalizeAutoMvp(model, record, receipt, options)
+  return {
+    ready: result.ready === true,
+    blocking: result.blocking || [],
+    completion_mode: result.completion_mode ?? null,
+    automated_reviews: result.automated_reviews || [],
+    limitations: result.limitations || [],
+    inputs_unchanged: JSON.stringify({ model, record, receipt, options }) === before,
+  }
+}
+
+/** What the platform-derived release observations would be, for an injected transport. */
+export async function releaseObservationOutcome({ model, fetchImpl, repository = 'owner/repo', candidate = 'a'.repeat(40) }) {
+  const { observeReleasePrerequisites } = await loadModule(join(CI_TOOLS, 'ci-release-observer.mjs'))
+  const receipt = await observeReleasePrerequisites(model, { repository, candidate, token: 'spec-read-token', reference: 'spec:observation', fetchImpl })
+  return { result: receipt.result, prerequisites: receipt.prerequisites, confirmation_ref: receipt.confirmation_ref }
+}
+
+/**
+ * Durable iteration journal observed across a restart: events are appended, the
+ * directory is re-read from disk, and one invalid event is offered to the writer.
+ */
+export async function iterationObservation({ events = [], invalidEvent = null } = {}) {
+  const iterations = await loadModule(join(PLUGIN_LIB, 'iterations.js'))
+  const dir = mkdtempSync(join(tmpdir(), 'spec-iterations-'))
+  let invalid_refused = false
+  try {
+    for (const event of events) iterations.appendIteration(dir, event)
+    if (invalidEvent) {
+      try {
+        iterations.appendIteration(dir, invalidEvent)
+      } catch {
+        invalid_refused = true
+      }
+    }
+    // A fresh read is the restart: nothing is carried in memory.
+    const loaded = iterations.loadIterations(dir)
+    const reduced = iterations.reduceIterations(loaded.events)
+    return {
+      dir,
+      iterations: reduced.iterations,
+      current: reduced.current,
+      blocked: reduced.blocked,
+      closed: reduced.closed,
+      unreadable_lines: loaded.problems.length,
+      invalid_refused,
+      summary: iterations.summarizeRecovery({ iterations: reduced, problems: loaded.problems }),
+      bytes: readIfExists(join(dir, '.agent', 'ITERATIONS.jsonl')),
+    }
+  } finally {
+    try {
+      rmSync(dir, { recursive: true, force: true })
+    } catch {
+      // a leftover temp directory is not a product failure
+    }
+  }
 }
 
 export { cpSync }

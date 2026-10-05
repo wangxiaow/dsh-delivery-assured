@@ -1,6 +1,7 @@
 import { blockingForView, coverageRows, classifyManualReview } from './coverage-core.mjs'
 import { classifyEvidence, isPlaceholder } from './model.mjs'
 import { requiredCaseIds } from './selection.mjs'
+import { assessAutomatedReviews, resolveCompletionPolicy } from './completion.mjs'
 
 // This computes prerequisites. Authentication of CI and owner receipts remains
 // the external consumer's responsibility, never a JSON issuer string's power.
@@ -21,9 +22,17 @@ export function assessMvpReady(model, record, releaseReceipt, options = {}) {
   if (record?.environment?.kind !== requiredEnvironment) blocking.push(`the verified environment is not the configured MVP_READY environment (${requiredEnvironment})`)
   const coverage = coverageRows(current, { candidate, parentBaseline, trustedIssuer })
   for (const id of blockingForView(coverage.buckets, 'mvp')) blocking.push(`${id} remains unverified`)
-  for (const definition of current.contract.acceptance?.manual_reviews || []) {
-    const review = current.reviews.find(r => r.review_id === definition.id)
-    if (classifyManualReview(review, definition, { ...current, evidence: record ? [record] : [] }, { candidate, parentBaseline, trustedIssuer }).status !== 'VERIFIED') blocking.push(`owner Review ${definition.id} is missing or stale`)
+  // The completion policy decides which kind of review can close this project.
+  // An undeclared policy resolves to human_review, so a missing field can never
+  // make a project automatically deliverable.
+  const policy = resolveCompletionPolicy(current.contract)
+  if (policy.mode === 'independent_auto') {
+    blocking.push(...assessAutomatedReviews(current, record, { sourceReference: options.sourceReference || null }).blocking)
+  } else {
+    for (const definition of current.contract.acceptance?.manual_reviews || []) {
+      const review = current.reviews.find(r => r.review_id === definition.id)
+      if (classifyManualReview(review, definition, { ...current, evidence: record ? [record] : [] }, { candidate, parentBaseline, trustedIssuer }).status !== 'VERIFIED') blocking.push(`owner Review ${definition.id} is missing or stale`)
+    }
   }
   const prerequisites = current.contract.deployment?.release_prerequisites
   const operational = current.contract.deployment?.operational_acceptance_ids

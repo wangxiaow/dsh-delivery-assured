@@ -201,6 +201,9 @@ jobs:
     permissions:
       contents: read
       actions: read
+      # Automatic completion observes the required checks on the candidate and the
+      # protected refs from the platform instead of accepting a human assertion.
+      checks: read
       issues: read
     steps:
       - uses: actions/checkout@v4
