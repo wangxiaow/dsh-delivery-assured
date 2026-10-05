@@ -231,6 +231,30 @@ BL-002 元数据：`completion_mode: independent_auto`、`remaining_outcomes: []
 1. **`ci-stage.mjs` 拒绝任何改动 `packages/` 或 `plugins/` 的候选**（这两个目录一律取自 canonical，候选改了也不会被验证）。在 main 已启用必需检查的前提下，这意味着**本仓库无法通过 PR 修改自己的操作包与插件**：候选检查必然失败，而必需检查又禁止直接推送。本轮因此需要第二次一次性解除保护才能落地插件门禁修复。这是保护规则与产品边界之间的真实冲突，尚未解决，下次改动 `packages/**` 或 `plugins/**` 时会再次撞上。
 2. `tools/local-promotion-drill.mjs` 在本轮开始时**已经坏了**（与本次改动无关）：它的 fixture 证据早于 Contract v4，晋升以 “every candidate record is stale against the current standards” 加一长串未闭合义务阻塞。它不在 build gate 里，所以没有任何东西报出这件事。当前不能拿它当晋升证据。
 
+### DSH 真实入口验证后暴露的新缺口：会话侧读不到 durable state
+
+这次的 DSH 入口是**真的**跑过的，不是在脚本里模拟：新建独立 profile `delivery-auto`（`dsh-base` + `dsh-headless` + 插件，`packages/**`、`plugins/**` 与 `profiles/desktop` 均未改动），用**应用自带的运行时** `resources/app.asar/dsh/node_modules/@deepseek-ai/dsh/lib/bin.js`（0.2.0-rc.2，与插件声明的 peer 线一致）以 `ELECTRON_RUN_AS_NODE=1` 启动 headless 会话。结果：Skill 与 Global Kernel 正常加载，7 个工具注册成功，模型调用 `delivery_ci observe` 并拿回了 run `37261822269` 的真实平台事实（两项必需检查 success、candidate = `c5b50e8`、`successful: true`）。**DSH 执行入口可用。**
+
+但同一个会话里 `delivery_resume` 报告的是"已交付但被阻塞"，与平台事实相反：
+
+```text
+budget.invalid_entries = [{ line: 0, message: "comparison rebase DEC-8-ENVIRONMENT is missing approval or mismatches the frozen sets" }]
+budget.critical_open   = [A-CLI-CRITICAL-NOT-LOCAL-PASS / A-CLI-BLOCKED-WITHOUT-CI / A-CLI-STALE-EVIDENCE / A-CLI-STATE-DONE-NOT-COMPLETION: "no current trusted pass"]
+budget.blocked = true          运行退出码 1（5 个阻塞）
+```
+
+机制（读代码确认）：`resume.mjs` 只读工作树与 `refs/heads/baseline/main`，**从不读 `delivery-state/main`**（`--offline` 更是明确不读远端）。而 Baseline 元数据、Evidence、attempts 与 `STANDARD_CHANGES.yaml` **只存在于 durable state**。只有 CI 的 verify/promote 会 `git archive delivery-state/main project | tar -x` 把它铺进工作区；**会话没有对等通路**。所以：
+
+- 真实工作区（main = `7e6e0d1`）里，会话入口把已交付状态报成 blocked，并给出"comparison rebase 缺审批"这种看似数据损坏的原因；
+- 把同一份 durable state 覆盖到 `c5b50e8` 的干净检出后，同一个命令才报 `BL-002`、`verified 18`、owed 全空、`budget 6/8`、`PASS resume`。
+
+结论：**跨会话恢复能力依赖一次人工（或 CI）状态覆盖**，产品自身没有会话侧通路。这是当前最实质的缺口，且它直接影响需求第 1、5 条（在 DSH 里恢复当前任务、有效交付状态与预算）。
+
+另有两处激活事实需要记清：
+
+1. 用户在用的 `desktop` profile **仍未挂载插件**（本轮刻意未改动它，`plugins/dsh-delivery-assured/install.mjs` 对运行中的 desktop profile 默认拒绝写入）。所以在真实桌面会话里目前**没有任何 `delivery_*` 工具**，能力已就位但未接线。
+2. 用 CLI 安装的 dsh 启动（`$DSH_HOME/profiles/node_modules` 的 0.1.5-rc.3 线）时，插件按设计**拒绝注册全部工具**，只加载 Skill/guard/kernel——本次第一次 headless 尝试就是这样（"delivery_ci does not exist in this session"）。只有宿主运行时与声明的 `^0.2.0-rc.2` 一致时工具才注册。这是正确的防御行为，但意味着"装进某个 profile"不等于"工具一定可用"，必须用匹配的宿主验证。
+
 ## 尚欠工程与外部实证
 
 1. **可运行、可独立实证的隔离后端仍未实现。** 已增加[限制型请求模块](ci/tools/ci-isolation.mjs)：固定 digest、non-root、无网络、只读输入、独立输出、资源限制、cap-drop、无主机环境继承及 shell；注入执行器的零退出始终不授予 runtime trust 或 Promotion。这个模块没有真实 executor，没有锁定/独立证明实际 mount 和 namespace；现有 verifier 的项目内写入也尚未适配只读输入，不能把请求参数或合成测试当作端到端可用后端。 本机 Get-Command docker 未发现 Docker CLI，未连接 daemon 或拉取镜像，不能以本机现有环境实证容器隔离。 候选和 verifier 目前不能凭复制 canonical 文件获得进程/文件系统隔离保证。collector 忽略候选自行提交的 trust 字段，仅将 transport 标为已确认，runtime_isolation_verified 固定 false；这些观察不能关闭 Coverage。**本轮已按 owner 决定把隔离从晋升硬门禁降级为告警：** `promotion.yml` 不再无条件阻塞，告警写入 Baseline 元数据 `runtime_isolation`，transport/仓库/run 身份/revision 来源仍阻塞。真实隔离后端依旧是欠账，不能用自报布尔值替代。
