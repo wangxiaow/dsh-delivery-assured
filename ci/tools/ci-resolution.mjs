@@ -26,25 +26,46 @@ function iso(value) {
   return Number.isFinite(ms) && new Date(ms).toISOString() === (value.includes('.') ? value : value.replace('Z', '.000Z'))
 }
 function receiptValid(r) {
+  // `success` is included because a successful verification whose *collection* was
+  // refused is still a real source that must be accounted for, not a run to ignore.
   return object(r) && /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(r.repository || '')
     && Number.isSafeInteger(r.run_id) && r.run_id > 0 && Number.isSafeInteger(r.run_attempt) && r.run_attempt > 0
     && r.run_key === `${r.run_id}-${r.run_attempt}` && /^[0-9a-f]{40}$/.test(r.verifier_revision || '')
     && r.path === '.github/workflows/verify.yml' && r.event === 'workflow_dispatch' && r.head_branch === 'main'
-    && ['failure', 'cancelled', 'timed_out', 'action_required', 'neutral', 'skipped', 'stale'].includes(r.conclusion)
+    && ['success', 'failure', 'cancelled', 'timed_out', 'action_required', 'neutral', 'skipped', 'stale'].includes(r.conclusion)
 }
 function parseDiagnostic(value) {
   requireValue(typeof value === 'string', 'original diagnosticText required')
   const d = JSON.parse(value)
-  requireValue(object(d) && d.status === 'blocked' && d.derived_attempt === true && Array.isArray(d.errors) && d.errors.length > 0 && d.errors.every(text), 'diagnostic has no retained derived attempt')
+  requireValue(object(d) && d.status === 'blocked' && Array.isArray(d.errors) && d.errors.length > 0 && d.errors.every(text), 'diagnostic has no retained blocking errors')
+  requireValue(typeof d.derived_attempt === 'boolean', 'diagnostic must state whether an attempt was derived')
   requireValue(receiptValid(d.receipt) && d.run_key === d.receipt.run_key, 'invalid diagnostic source receipt')
   return d
 }
 
+/**
+ * A refused collection either derived a counted attempt (which the owner must
+ * acknowledge as retained history) or never reached one. The second kind is a
+ * bookkeeping failure: nothing was counted, so it is acknowledged as unrecorded
+ * with the concrete cause — and only after proving that no attempt or evidence for
+ * that run exists, so an acknowledged record can never overwrite a real one.
+ */
 export function buildDiagnosticResolution({ diagnosticText, evidence, attempts, owner, confirmationRef, at }) {
   const d = parseDiagnostic(diagnosticText)
   requireValue(attribution(owner) && attribution(confirmationRef), 'non-placeholder owner and confirmation reference required')
   requireValue(iso(at), 'valid ISO UTC timestamp required')
   requireValue(Array.isArray(evidence) && Array.isArray(attempts), 'retained evidence and attempt arrays required')
+  const shared = { run_key: d.run_key, diagnostic_digest: digest(diagnosticText), owner, confirmation_ref: confirmationRef, resolved_at: at }
+  if (d.derived_attempt === false) {
+    // Evidence and attempts reference a run through its `ci_run_id` and the run key
+    // embedded in their identities. Either one existing means this run was recorded
+    // after all, so it must not be acknowledged as unrecorded.
+    const runKey = new RegExp(`(^|[^0-9])${d.run_key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}([^0-9]|$)`)
+    const mentionsRun = value => typeof value === 'string' && runKey.test(value)
+    requireValue(evidence.filter(e => e?.record?.execution?.ci_run_id === d.run_key || mentionsRun(e?.record?.evidence_id)).length === 0, 'a recorded attempt cannot be acknowledged as unrecorded')
+    requireValue(attempts.filter(a => mentionsRun(a?.ci_ref) || mentionsRun(a?.attempt_id)).length === 0, 'a counted attempt cannot be acknowledged as unrecorded')
+    return Object.freeze({ ...shared, disposition: 'acknowledged-unrecorded-bookkeeping-failure', attempt_id: null })
+  }
   const matches = evidence.filter(e => e?.record?.execution?.ci_run_id === d.run_key)
   requireValue(matches.length === 1, 'missing or ambiguous retained evidence')
   const { record: r, sourceReceipt: source } = matches[0]
@@ -73,7 +94,7 @@ export function buildDiagnosticResolution({ diagnosticText, evidence, attempts, 
   const passed = outcomes.filter(c => c.outcome === 'passed').length
   const skipped = outcomes.filter(c => ['skipped', 'not_run'].includes(c.outcome)).length
   requireValue(a.required_total === cases.length && a.required_passed === passed && r.execution.required_cases === cases.length && r.execution.executed_cases === cases.length - skipped && r.execution.skipped_required_cases === skipped, 'retained counts mismatch')
-  return Object.freeze({ run_key: d.run_key, diagnostic_digest: digest(diagnosticText), owner, confirmation_ref: confirmationRef, resolved_at: at, disposition: 'retained-counted-failure', attempt_id: a.attempt_id })
+  return Object.freeze({ ...shared, disposition: 'retained-counted-failure', attempt_id: a.attempt_id })
 }
 
 export function unresolvedDiagnostics(diagnostics, resolutions) {

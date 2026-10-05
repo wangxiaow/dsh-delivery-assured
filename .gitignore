@@ -19,6 +19,12 @@ ci/evidence/
 
 # 预算记录（每次尝试都追加）
 .agent/attempts.jsonl
+**/.agent/attempts.jsonl
+
+# 每个项目自己的验证输出与证据副本；它们属于 delivery-state 引用，不属于 main。
+# 缺少 **/ 前缀时只匹配仓库根目录，project/ 下的同类路径会漏掉并被误提交。
+**/ci/evidence/
+**/ci/reports/
 
 # 例外：Baseline 元数据是权威记录，必须保留
 !ci/baseline/

@@ -92,3 +92,49 @@ test('a resolution never clears another diagnostic', () => {
   diagnosticChange(other, d => { d.run_key = '13-2'; d.receipt.run_id = 13; d.receipt.run_key = '13-2' })
   assert.deepEqual(unresolvedDiagnostics([f, other], [r]), [other])
 })
+
+// A successful verification whose *collection* was refused never reached an attempt.
+// Nothing was counted, so it is acknowledged as unrecorded — but only while it is
+// provable that no attempt or evidence for that run exists.
+function bookkeepingFixture() {
+  const receipt = { repository: 'fixture/repo', run_id: 21, run_attempt: 1, run_key: '21-1', verifier_revision: 'd'.repeat(40), path: '.github/workflows/verify.yml', event: 'workflow_dispatch', head_branch: 'main', conclusion: 'success' }
+  return {
+    diagnosticText: JSON.stringify({ run_key: '21-1', status: 'blocked', errors: ['invalid attempt history: comparison rebase missing approval'], receipt, derived_attempt: false, receipt_written: true }, null, 2) + '\n',
+    evidence: [], attempts: [], owner: 'alice-maintainer', confirmationRef: 'local-fixture:root-cause-fixed-21', at: '2026-01-02T00:00:00Z',
+  }
+}
+
+test('a successful run with a refused collection is acknowledged as unrecorded, not silently dropped', () => {
+  const f = bookkeepingFixture(), before = JSON.stringify(f)
+  const r = buildDiagnosticResolution(f)
+  assert.equal(r.disposition, 'acknowledged-unrecorded-bookkeeping-failure')
+  assert.equal(r.attempt_id, null)
+  assert.equal(r.diagnostic_digest, createHash('sha256').update(f.diagnosticText).digest('hex'))
+  assert.deepEqual(Object.keys(r), ['run_key', 'diagnostic_digest', 'owner', 'confirmation_ref', 'resolved_at', 'disposition', 'attempt_id'])
+  assert.deepEqual(unresolvedDiagnostics([f], [r]), [])
+  assert.equal(JSON.stringify(f), before)
+  assert.equal(Object.isFrozen(r), true)
+})
+
+test('an unrecorded acknowledgement cannot swallow a real attempt, evidence or a placeholder reason', () => {
+  const mutations = {
+    'linked evidence exists': f => { const linked = fixture().evidence[0]; linked.record.execution.ci_run_id = '21-1'; f.evidence = [linked] },
+    'linked attempt exists': f => { const linked = fixture().attempts[0]; linked.ci_ref = 'ci:verify:21-1'; linked.attempt_id = 'ci:verify:21-1'; f.attempts = [linked] },
+    'placeholder reason': f => { f.confirmationRef = 'TODO' },
+    'invalid timestamp': f => { f.at = 'not-a-date' },
+    'missing receipt': f => { delete JSON.parse(f.diagnosticText).receipt; f.diagnosticText = JSON.stringify({ run_key: '21-1', status: 'blocked', errors: ['x'], derived_attempt: false }) },
+    'unknown derived state': f => { const d = JSON.parse(f.diagnosticText); delete d.derived_attempt; f.diagnosticText = JSON.stringify(d) },
+    'no retained error': f => { const d = JSON.parse(f.diagnosticText); d.errors = []; f.diagnosticText = JSON.stringify(d) },
+  }
+  for (const [name, mutate] of Object.entries(mutations)) {
+    const f = bookkeepingFixture()
+    mutate(f)
+    assert.throws(() => buildDiagnosticResolution(f), name)
+    // The proposal's own owner/ref/timestamp are supplied by the caller, so only a
+    // mutated retained context can make an otherwise valid proposal stop matching.
+    if (!['placeholder reason', 'invalid timestamp'].includes(name)) {
+      const proposal = buildDiagnosticResolution(bookkeepingFixture())
+      assert.deepEqual(unresolvedDiagnostics([f], [proposal]), [f], name)
+    }
+  }
+})
