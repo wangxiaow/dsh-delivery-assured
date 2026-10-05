@@ -207,6 +207,30 @@ DEC-10 另由 owner 明确批准最终人工评审方式：全新本地目录实
 1. `resolve-diagnostic` job 声明的 environment `delivery-state-resolution` **并不存在**（现存只有 `baseline-promotion`、`delivery-state-bootstrap`、`delivery-state-recording`、`trusted-verification`）。GitHub 在首次使用时自动创建了它，**没有审批保护规则**，于是这条路径上的"owner 审批"退化成 `github.actor == resolution_owner` 的自证。角色隔离欠账因此比原先记录的更具体：该 environment 需要真正配置必需评审人。
 2. 死锁的**根因**（采集失败后系统无法自愈，只能靠 owner 出面）仍未从设计上消除；本轮是解除，不是修复。`delivery_ci` 白名单也不含 `record-attempt` / `resolve-diagnostic` 两个恢复入口，所以会话内无法自助恢复。
 
+## 本轮：自动终局首次达成（BL-002，2026-10-05）
+
+解除死锁之后，同一条链路第一次真正走到了自动终局，**没有 owner 回执、没有审批评论、没有手改状态**：
+
+| 步骤 | run / 位置 | 结果 |
+|---|---|---|
+| 状态文本与 build gate 同步 | PR #3 verify `37260827942` | 两项必需检查通过，`main` → `6ce8e40e` |
+| 晋升状态提交修复（`git add -f`） | PR #4 verify `37261563988` | 两项必需检查通过，`main` → `37161b10` |
+| 插件门禁断言修复 | 第二次一次性解除保护后快进 | `main` = `c5b50e8` |
+| 冻结候选验证（S2，父基线 BL-001） | verify `37261822269` | **11/11 Required 实际执行通过、0 Spine 失败、8 个累积 case 全部重验** |
+| 自动采集 | promote `37261882904` | attempt `ci:verify:37261822269-1` 落账（累计 6 次 attempt、1 次 Replan） |
+| 独立自动终局（无 owner 回执） | promote `37261990313` | **BL-002 晋升成功**，`refs/heads/baseline/main` = `c5b50e8`，父基线 BL-001 |
+
+BL-002 元数据：`completion_mode: independent_auto`、`remaining_outcomes: []`、`manual_reviews_pending: []`、`owner_confirmation_ref: null`、18 项机验结果、Spine 累积 11 个 case；三项发布前提（该候选上的两项必需检查、Baseline 引用可读、验证工作流启用）由晋升 job 自己读平台观测后判定，HTTP 失败或权限不足一律 `UNVERIFIED`。`runtime_isolation.verified: false` 仍只作为告警记录。
+
+新会话恢复实证：把 durable state 覆盖到 `c5b50e8` 的干净检出上运行 `resume.mjs --offline` → `baseline: BL-002 @ c5b50e8d4379`、`verified 18`、owed 全空、`budget attempts 6/8 replans 1/2`、`PASS resume`。6 次 attempt 与 1 次 Replan 的历史和预算跨会话保留，未重算、未清零。
+
+本轮修掉的真实缺陷（晋升为何失败）：MVP_READY 的 dry run 已经算出 “BL-002 would be promoted”，`--apply` 却在持久化时死掉 —— 上一轮加固的 `.gitignore`（`**/ci/evidence/`、`**/.agent/attempts.jsonl`）让 `git add` 拒绝被忽略的路径。新 Baseline 必然写入新的证据文件，所以**每一次晋升都会以同样方式失败**。采集器不受影响，因为它用 `hash-object` + `update-index` 直接写 blob。修复是在这条明确的状态提交路径上加 `-f`：忽略规则的本意（防止工作树 `git add -A` 误提交 state）不变，而这次提交本来就是刻意的。
+
+必须同时记录的两处真实约束：
+
+1. **`ci-stage.mjs` 拒绝任何改动 `packages/` 或 `plugins/` 的候选**（这两个目录一律取自 canonical，候选改了也不会被验证）。在 main 已启用必需检查的前提下，这意味着**本仓库无法通过 PR 修改自己的操作包与插件**：候选检查必然失败，而必需检查又禁止直接推送。本轮因此需要第二次一次性解除保护才能落地插件门禁修复。这是保护规则与产品边界之间的真实冲突，尚未解决，下次改动 `packages/**` 或 `plugins/**` 时会再次撞上。
+2. `tools/local-promotion-drill.mjs` 在本轮开始时**已经坏了**（与本次改动无关）：它的 fixture 证据早于 Contract v4，晋升以 “every candidate record is stale against the current standards” 加一长串未闭合义务阻塞。它不在 build gate 里，所以没有任何东西报出这件事。当前不能拿它当晋升证据。
+
 ## 尚欠工程与外部实证
 
 1. **可运行、可独立实证的隔离后端仍未实现。** 已增加[限制型请求模块](ci/tools/ci-isolation.mjs)：固定 digest、non-root、无网络、只读输入、独立输出、资源限制、cap-drop、无主机环境继承及 shell；注入执行器的零退出始终不授予 runtime trust 或 Promotion。这个模块没有真实 executor，没有锁定/独立证明实际 mount 和 namespace；现有 verifier 的项目内写入也尚未适配只读输入，不能把请求参数或合成测试当作端到端可用后端。 本机 Get-Command docker 未发现 Docker CLI，未连接 daemon 或拉取镜像，不能以本机现有环境实证容器隔离。 候选和 verifier 目前不能凭复制 canonical 文件获得进程/文件系统隔离保证。collector 忽略候选自行提交的 trust 字段，仅将 transport 标为已确认，runtime_isolation_verified 固定 false；这些观察不能关闭 Coverage。**本轮已按 owner 决定把隔离从晋升硬门禁降级为告警：** `promotion.yml` 不再无条件阻塞，告警写入 Baseline 元数据 `runtime_isolation`，transport/仓库/run 身份/revision 来源仍阻塞。真实隔离后端依旧是欠账，不能用自报布尔值替代。
