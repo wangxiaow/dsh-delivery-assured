@@ -1,0 +1,9 @@
+{
+  "run_key": "37257812477-1",
+  "diagnostic_digest": "37993f24e96263354ac4f0d0628577b4761d9ccae1aadf21a448660636e61155",
+  "owner": "wangxiaow",
+  "confirmation_ref": "DSH review session 2026-10-05, user-authorized one-time lift of the main required-checks gate to land the ci-resolution fix, plus an explicit instruction to account for the refused collection 37257812477-1 honestly",
+  "resolved_at": "2026-10-05T03:40:26.081Z",
+  "disposition": "acknowledged-unrecorded-bookkeeping-failure",
+  "attempt_id": null
+}
