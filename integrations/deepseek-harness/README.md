@@ -1,6 +1,6 @@
 # DeepSeek Harness 接入（v0.5 §16.5）
 
-本目录保留既有 DSH 接入记录和本地复核方法；下文宿主版本、profile 激活与重启信息属于历史记录，本轮未访问用户 profile，也未重新核实它们。当前开发未取得真实 CI Evidence、受保护 Baseline 晋升或真实部署证据；测试通过非完成。已有 origin/main 与 origin/standards/acceptance 本地跟踪引用，远端权限与保护是否生效未核实，不应写成“无远端仓库”。
+本目录保留既有 DSH 接入记录和本地复核方法。宿主版本与 profile 信息属于历史记录（本轮只重新核验了 profile 组合，未重启 Electron、未改动 `desktop` profile）。平台侧事实：真实 CI 已把 `baseline/main` 晋升到 BL-001，并保留 4 次 Candidate attempt 与 1 次 Replan；`main` 上的两项必需检查已启用。插件在独立 profile `delivery-verify` 中经 `--dump-config` 实测可组合，但用户正在使用的 `desktop` profile 并未挂载它，所以桌面会话拿不到 `delivery_*` 工具——这是仍然欠着的接入项，不能写成“已收敛到 DSH 入口”。
 
 ## 1. 锁定的运行环境
 
@@ -132,11 +132,11 @@ DSH 会话结束、插件工具返回、模型回复“完成”，**都不等�
 
 | 标准 | 当前证据边界 |
 |---|---|
-| 真实 DSH 宿主加载插件、工具与 Skill | 上文是历史接入记录；本轮未访问 profile，当前激活状态待复核 |
-| 调用真实脚本 | 可按第 6 节本地复核；最新测试计数未在此宣称已验证 |
-| 执行实际项目 Slice | S1 仍是候选/本地诊断；本地门与验收通过不等于 VERIFIED_DONE |
-| 取得真实 CI Evidence 与受保护 Baseline | 未取得；origin/main 与 origin/standards/acceptance 本地引用存在，远端权限、保护及 CI 生效情况未核实 |
-| 新会话恢复未完成项与预算 | 使用 project/ 下 resume --offline 重算；STATE 仅为线索，不能证明完成 |
-| 真实部署、最终 Journey Review 与重启后可用 | 尚未取得当前版本真实部署证据；Electron 重启与实际会话调用仍待复核 |
+| 真实 DSH 宿主加载插件、工具与 Skill | 独立 profile `delivery-verify` 经 `--dump-config` 实测组合成功（本轮核验）；工具行为由需要 DSH 侧包的套件覆盖，无包环境会跳过。`desktop` 未挂载插件，桌面会话中工具不可用 |
+| 调用真实脚本 | 可按第 6 节本地复核；`host` 相关套件需要 DSH 侧包，无包环境会跳过它们 |
+| 执行实际项目 Slice | S2（本次纠偏引入的切片）尚无一次落账的候选验证；本地门与验收通过不等于 VERIFIED_DONE |
+| 取得真实 CI Evidence 与受保护 Baseline | 已取得：BL-000 与 BL-001 由真实 CI 晋升，`refs/heads/baseline/main` = `038cb0ae`，4 次 Candidate attempt 与 1 次 Replan 保留在 `delivery-state/main` |
+| 新会话恢复未完成项与预算 | `resume --offline` 可重算；迭代日志 `ITERATIONS.jsonl` 尚未在任何真实迭代中产生，`delivery_iteration` 的实际使用仍待证明 |
+| 真实部署、最终 Journey Review 与重启后可用 | 部署门有真实生产者并已在 CI 中运行；没有独立 staging；不带 owner 回执的自动终局尚未产出；Electron 重启后的会话调用仍待复核 |
 
-接入未完成。本地引用、模拟晋升和测试通过均不替代真实 CI/Baseline/部署证据。[STATE 摘要](../../project/.agent/STATE.yaml) 中“无远端仓库”、历史计数与“全绿”等文字可能过期，本轮未编辑该文件；以本地引用检查、离线重算及将来的真实权威记录为准。
+接入未完成：桌面会话仍拿不到这些工具，独立自动终局也尚未产出。本地引用、模拟晋升和测试通过均不替代真实 CI/Baseline/部署证据。[STATE 摘要](../../project/.agent/STATE.yaml) 中“无远端仓库”、历史计数与“全绿”等文字可能过期，本轮未编辑该文件；以本地引用检查、离线重算及权威记录为准。

@@ -182,11 +182,36 @@ DEC-10 另由 owner 明确批准最终人工评审方式：全新本地目录实
 
 [正式 Replan 提案](project/.agent/REPLAN.yaml) 记录被证伪的“评审后再重跑能完成 MVP”假设，替换为“一次机器 source + 独立 owner 最终确认”，保留全部 11 项 Required。新 [CI 入口](.github/workflows/record-replan.yml) 与 [状态服务](ci/tools/ci-replan.mjs) 仅追加 blocked/Replan 记录和不可改写收据，main-only、state-only、精确 source/state SHA，核对已批准 Contract/config、完整已收集历史与 unresolved diagnostics；不执行 Candidate、不持有 Baseline token、不形成 PASS。23 个离线入口反例验证 3/8 Candidate 历史原字节保留、Replan 变为 1/2、重复不再消耗、旧 state 与修改同 ID 被拒、Required/scope/配额越界被拒，原 FAIL 不改写。实际操作先持久记录 Replan，再对 BL-001 冻结验证；此 producer 同样必须用真实 CI 验证。
 
+## 本轮：自动闭环死锁的发现与按授权解除（2026-10-05）
+
+真实平台暴露的不是"再等等就好"，而是**一个任何候选都无法通过的死锁**，且它由系统自身的记账动作造成：
+
+- verify 在候选 `efac056` 上成功（run `37257812477`，11/11 Required（S2 新增 3 项 + S1 累积 8 项）全部真实执行、8 个 Spine 通过）。但这一轮的 **采集被拒绝**（collector run `37257880672`）：账本第 5 条引用的 `DEC-8-ENVIRONMENT` 比较重基当时没有落盘审批，于是写下了 `derived_attempt: false` 的阻塞诊断 `37257812477-1`。
+- 一条诊断只能由 `resolutions/` 记录解除（[ci-record.mjs](ci/tools/ci-record.mjs) 的 `unresolvedDiagnostics` 会重新派生校验；重复落账只返回 duplicate），而它同时阻塞 verify 的 precheck、`ci-promote` 与 `record-replan`。
+- 允许 `derived_attempt: false` 被如实记为"未落账的记账失败"的修正，**就在被这条诊断挡住的 PR 里**；`resolve-diagnostic` 只能在 `refs/heads/main` 上跑、用的是 main 的代码，而 main 当时要求 `derived_attempt === true` → 必然拒绝；`enforce_admins=true` 又不允许绕过必需检查。**修正与被修正的条件互锁。**
+- 因此这不是"等待"，而是需要 owner 出面的一次性基础设施动作；`STATE.yaml` 当时记录的"还需一次成功的 verify 与一次不带 owner 评论的 promote"是准确描述，但漏掉了这层死锁。
+
+用户明确授权后执行（一次、有界、可回滚）：
+
+1. 快照 `main` 保护的**全部字段**，写入独立目录（不落在仓库工作树）。
+2. 临时解除 `main` 保护 → 把 `main` **快进**到 `9bd6454`（携带 [ci-resolution](ci/tools/ci-resolution.mjs) 的记账修正与 `STANDARD_CHANGES` 移入 durable state）→ **立即按快照原值恢复**保护。
+3. 恢复后逐字段比对 before/after：`IDENTICAL: true`（`contexts=["structural checks","verify candidate"]`、`strict=true`、`enforce_admins=true`、禁强推/禁删除，其余均 false）。窗口约两分钟，期间未改任何其他设置。
+4. 用**既有合法入口**（不是手写状态）派发 `promote.yml` `mode=resolve-diagnostic`（run `37260357345`，成功）：为 `37257812477-1` 追加 `acknowledged-unrecorded-bookkeeping-failure` 的 resolution，`attempt_id: null`，`owner` 为仓库真实 actor。**原诊断原文保留、不改写**；attempt 账本、Evidence、Baseline 与预算均未改动。新 state tip `e7a50c3d`。
+
+明确**没有**做的事：没有手写或伪造 owner 回执/PASS（这条 resolution 的语义是"承认一次未落账的记账失败"，不是通过），没有改写旧 Evidence 或旧 attempt，没有清预算，没有关着保护不动，也没有把一次成功 verify 追认为已交付。
+
+顺带修掉一个被 CI 掩盖的红门：[skill-registry.test.mjs](plugins/dsh-delivery-assured/test/skill-registry.test.mjs) 仍在断言已被本次纠偏删除的旧人工触点（`Unknowns Gate` / `final Journey Review`），而 [skill.js](plugins/dsh-delivery-assured/lib/skill.js) 已改为自动验收。断言改为**断言后继规则**（正文必须写明 `independent_auto`、无需 owner 评论，且不得再出现旧触点），不是放宽。该套件 `requires: 'dsh-packages'`，没有 DSH 包的 CI 会静默跳过它，所以"CI 绿"与"门真绿"是两件事。
+
+**本轮暴露的两个新欠账**（不得当成已解决）：
+
+1. `resolve-diagnostic` job 声明的 environment `delivery-state-resolution` **并不存在**（现存只有 `baseline-promotion`、`delivery-state-bootstrap`、`delivery-state-recording`、`trusted-verification`）。GitHub 在首次使用时自动创建了它，**没有审批保护规则**，于是这条路径上的"owner 审批"退化成 `github.actor == resolution_owner` 的自证。角色隔离欠账因此比原先记录的更具体：该 environment 需要真正配置必需评审人。
+2. 死锁的**根因**（采集失败后系统无法自愈，只能靠 owner 出面）仍未从设计上消除；本轮是解除，不是修复。`delivery_ci` 白名单也不含 `record-attempt` / `resolve-diagnostic` 两个恢复入口，所以会话内无法自助恢复。
+
 ## 尚欠工程与外部实证
 
 1. **可运行、可独立实证的隔离后端仍未实现。** 已增加[限制型请求模块](ci/tools/ci-isolation.mjs)：固定 digest、non-root、无网络、只读输入、独立输出、资源限制、cap-drop、无主机环境继承及 shell；注入执行器的零退出始终不授予 runtime trust 或 Promotion。这个模块没有真实 executor，没有锁定/独立证明实际 mount 和 namespace；现有 verifier 的项目内写入也尚未适配只读输入，不能把请求参数或合成测试当作端到端可用后端。 本机 Get-Command docker 未发现 Docker CLI，未连接 daemon 或拉取镜像，不能以本机现有环境实证容器隔离。 候选和 verifier 目前不能凭复制 canonical 文件获得进程/文件系统隔离保证。collector 忽略候选自行提交的 trust 字段，仅将 transport 标为已确认，runtime_isolation_verified 固定 false；这些观察不能关闭 Coverage。**本轮已按 owner 决定把隔离从晋升硬门禁降级为告警：** `promotion.yml` 不再无条件阻塞，告警写入 Baseline 元数据 `runtime_isolation`，transport/仓库/run 身份/revision 来源仍阻塞。真实隔离后端依旧是欠账，不能用自报布尔值替代。
 2. **未计数诊断恢复与真实 reconciliation 实证尚欠。** [定时工作流](.github/workflows/reconcile.yml)已实现 main-only 自动核对并请求一条最老的精确漏项，独立 concurrency、actions-write-only dispatcher，不持有 state/baseline 写凭据。HTTP 204 不清除缺口，必须下一轮独立 receipt 核对；7 项计划/传输反例及 11 项接线检查通过，未执行真实调度。 已增加 main-only `record-attempt` 手工重跑 collector 入口，独立确认精确来源与产物，不授予 Baseline 能力；已有 receipt 不覆盖。`resolve-diagnostic` 接入独立 owner 审批环境、明确 state SHA lease 和不可改写的原字节 digest；仅处理已完整保留、已计数的 FAILED 记录，原失败、原诊断和 Evidence 保留，新增 resolution 不转换为 PASS。[35 项纯校验](tools/ci-resolution.test.mjs)和[本地持久留痕演练](tools/ci-record.test.mjs)通过，实际环境审批尚未核验。 concurrency 不是持久队列，pending job 可能被替换；[历史核对](ci/tools/ci-history.mjs)已接入 precheck：独立只读 API 分页检查每个精确 completed attempt，包括同 run 的早期重跑；漏 receipt、分页不完整、限额耗尽及冲突均阻止新候选执行。20 项离线检查已通过；发现历史缺口后预算同步置 history_known=false、remaining=null、terminal_passed=false，不能只显示阻塞却继续展示“还有八次”或终态 PASS。自动补录需要实际平台权限及调度实证，平台已删除的历史也不能据此当成不存在；未解决诊断继续阻塞。不能声称预算记录已获平台端无遗漏保证。
-3. **平台保护已有部分实证，身份隔离与必需检查尚欠。** 四个引用的禁强推/删除已由 API 核实并实测普通快进推送兼容；main 必需 verify 检查仍未开启。CODEOWNERS、独立标准更新/state/PROMOTION 身份、环境审批和非授权推送拒绝仍待验证；共用 owner OAuth token 不能当作角色隔离证明。
+3. **平台保护已有部分实证，身份隔离与必需检查尚欠。** 四个引用的禁强推/删除已由 API 核实并实测普通快进推送兼容；main 的两项必需检查（`structural checks`、`verify candidate`）已启用，`strict=true`、`enforce_admins=true`（2026-10-05 由 API 核实，与本文件此前记录相反）。CODEOWNERS、独立标准更新/state/PROMOTION 身份、环境审批和非授权推送拒绝仍待验证；共用 owner OAuth token 不能当作角色隔离证明。
 4. **账本已由 owner 批准初始化，持久历史不可重置。** bootstrap run `37178817434` 已成功，BL-001 后保留 3 次 attempt（pass/fail/pass）；本工作区未叠加状态时日志缺失不等于远端历史为零。
 5. **发布前提和最终 owner Journey Review 尚欠。** DEC-8 明确批准本仓库无独立 staging 的环境例外，但未授予 Review PASS。全契约最终确认已有本地正向/反例与持久化演练，真实 CI 正向最终晋升仍需新的机器 Evidence 和真实 owner 回执。
 

@@ -14,7 +14,7 @@
 [![CI](https://github.com/wangxiaow/dsh-delivery-assured/actions/workflows/verify.yml/badge.svg)](https://github.com/wangxiaow/dsh-delivery-assured/actions/workflows/verify.yml)
 [![Implementation](https://img.shields.io/badge/implementation-v0.5-blueviolet.svg)](README.md)
 
-开发状态：本轮修复和本地回归记录见[修复报告](REPAIR_NOTES.md)；**运行时隔离仍未实现，已按 owner 决定从晋升硬门禁降级为写入 Baseline 元数据的告警**（真实隔离后端仍是欠账），部署门现在有了真实生产者（`ci-deploy-probe.mjs` 把打包产物装进干净目录并实际运行，再报告观测到的 revision 与 digest），未计数历史恢复仍欠工程实现；已增加精确 collector 手工重跑、单漏项定时补录请求及 counted-failure 留痕 resolution，但真实平台调度与审批尚未核验。尚未取得真实 CI Evidence、受保护 Baseline 晋升或真实部署证据；本地测试通过非完成，不宣称 MVP_READY。当前已有 origin/main 与 origin/standards/acceptance 本地跟踪引用，远端权限、保护和 CI 是否生效未核实；不是“无远端仓库”。
+开发状态：默认完成规则已按本次纠偏改为**独立自动验收**（`independent_auto`，见 [ADR-0001](docs/adr/0001-default-independent-auto-delivery.md) 与[自动交付说明](docs/AUTO_DELIVERY.md)）。平台侧已实测：`refs/heads/baseline/main` 由真实 CI 晋升到 **BL-001**（`038cb0ae`），4 次 Candidate attempt 与 1 次 Replan 保留在 `delivery-state/main`；`main` 已启用 `structural checks` + `verify candidate` 两项必需检查（`strict`、`enforce_admins`，禁强推/删除）。**尚未完成的部分**：S2（本次纠偏引入的义务与验收）还没有一次被落账的候选验证，也还没有一次不带 owner 回执的自动终局，所以不宣称 `MVP_READY`；插件只在独立 profile `delivery-verify` 中实测组合成功，用户在用的 `desktop` profile 未挂载它，因此**桌面会话当前拿不到 `delivery_*` 工具**；运行时隔离仍未实现，只作为 Baseline 元数据告警记录。另外 `host` 相关套件需要 DSH 侧包才会运行，没有 DSH 包的 CI 环境会跳过它们，所以“CI 绿”不等于这些套件通过。本地测试通过非完成。
 
 </div>
 
