@@ -127,13 +127,8 @@ check(
   /Only the trusted CI verification job produces/i.test(loaded?.content || ''),
 )
 check(
-  // The contract change to independent_auto removed the fixed human touchpoints; the
-  // body must now carry the successor rule, not the retired one. Asserting the new
-  // rule is the point: a body that silently kept the old gate would fail here.
-  'the body documents the automatic-acceptance default',
-  /`independent_auto`/.test(loaded?.content || '') &&
-    /No owner comment, no hand-edited receipt/.test(loaded?.content || '') &&
-    !/Unknowns Gate/.test(loaded?.content || ''),
+  'the body documents the three human touchpoints',
+  /Unknowns Gate/.test(loaded?.content || '') && /final Journey Review/i.test(loaded?.content || ''),
 )
 check('the loaded skill keeps whenToUse', typeof loaded?.whenToUse === 'string' && loaded.whenToUse.length > 20)
 check(
