@@ -16,6 +16,7 @@
 
 import { EXIT, InputError, findProjectRoot, finish, gitDirty, gitRevision, parseArgs, remoteRef } from './lib/common.mjs'
 import { coverageRows } from './lib/coverage-core.mjs'
+import { fetchDurableState } from './lib/durable-state.mjs'
 import { loadModel } from './lib/model.mjs'
 import { computeConvergence } from './lib/convergence.mjs'
 
@@ -26,13 +27,30 @@ function main() {
     json: 'boolean',
     quiet: 'boolean',
     'fetch-remote': 'boolean',
+    'durable-state': 'boolean',
   })
   if (opts.help) {
     process.stdout.write('resume — print the trustworthy starting point, what is still owed, and the next verification\n')
+    process.stdout.write('  --durable-state  also read refs/heads/delivery-state/main (Baseline, Evidence, attempts, Spine)\n')
     return EXIT.PASS
   }
+  if (opts['durable-state'] && opts.offline) {
+    throw new InputError('--durable-state reads the remote state ref, so it cannot be combined with --offline')
+  }
   const root = findProjectRoot(opts.project)
-  const model = loadModel(root)
+  // A session has no CI-style state overlay. Reading it here is what keeps a delivered
+  // project from being reported as blocked: the attempt ledger, the Baseline metadata and
+  // the recorded comparison approval live only on that ref.
+  const durable = opts['durable-state']
+    ? fetchDurableState({ repoRoot: root, fallbackRoot: root })
+    : { available: false, sha: null, root: null, reason: null, dispose() {} }
+  let model
+  try {
+    model = loadModel(root, { stateRoot: durable.available ? durable.root : null })
+  } catch (error) {
+    durable.dispose?.()
+    throw error
+  }
   const candidate = gitRevision(root, 'HEAD')
   const dirty = gitDirty(root)
   const notes = []
@@ -109,6 +127,15 @@ function main() {
     `remote ref   : ${opts.offline ? '(not read)' : remoteState.sha ? `${remoteState.sha.slice(0, 12)} on ${remote}` : `absent on ${remote}`}`,
   )
   human.push(
+    `durable state: ${
+      !opts['durable-state']
+        ? '(not read; pass --durable-state for the Baseline, Evidence, attempts and Spine the platform actually holds)'
+        : durable.available
+          ? `${durable.sha.slice(0, 12)} on ${durable.branch} (read-only; nothing was written into this project)`
+          : `unavailable — ${durable.reason}; records below are the working tree only`
+    }`,
+  )
+  human.push(
     `evidence     : ${model.evidence.length} local record(s), ${issuerMatch.length} naming the configured issuer${trustedIssuer ? ` (${trustedIssuer})` : ' (no trusted issuer configured)'}${otherIssuers ? `, ${otherIssuers} naming another issuer` : ''}; origin not verified here, so none of them is independently attested`,
   )
   human.push(`current slice: ${stateHint.current_slice || model.slices.find((s) => s.status && s.status !== 'VERIFIED_DONE')?.id || '(none declared)'}`)
@@ -146,7 +173,7 @@ function main() {
   human.push('note: STATE.yaml is a hint. Only the trusted CI verification job produces evidence, and only')
   human.push('      its Promotion job may advance the protected baseline reference.')
 
-  return finish({
+  const outcome = finish({
     code,
     script: 'resume',
     summary:
@@ -158,6 +185,13 @@ function main() {
       project: root,
       diagnostic_only: true,
       offline: opts.offline === true,
+      durable_state: {
+        requested: opts['durable-state'] === true,
+        available: durable.available === true,
+        sha: durable.sha || null,
+        scope_count: durable.scopes?.length ?? 0,
+        reason: durable.reason || null,
+      },
       candidate,
       dirty,
       baseline_ref: baselineRef,
@@ -196,6 +230,8 @@ function main() {
     color: !opts.quiet,
     jsonRequested: opts.json === true,
   })
+  durable.dispose?.()
+  return outcome
 }
 
 function pad(text, width) {

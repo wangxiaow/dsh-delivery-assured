@@ -65,3 +65,4 @@ export {
   specDiffAgainstProtected,
 } from './model.mjs'
 export { STATUS, BLOCKING_STATUSES, blockingForView, collectCriticalViolations, coverageRows, proveCase, classifyManualReview } from './coverage-core.mjs'
+export { STATE_REF, STATE_SCOPES, fetchDurableState, inStateScope } from './durable-state.mjs'

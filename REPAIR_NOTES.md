@@ -250,6 +250,31 @@ budget.blocked = true          运行退出码 1（5 个阻塞）
 
 结论：**跨会话恢复能力依赖一次人工（或 CI）状态覆盖**，产品自身没有会话侧通路。这是当前最实质的缺口，且它直接影响需求第 1、5 条（在 DSH 里恢复当前任务、有效交付状态与预算）。
 
+### 已修：会话侧只读读取 durable state
+
+新增 [durable-state.mjs](packages/delivery-assured/scripts/lib/durable-state.mjs)：取一个 ref、按 `git ls-tree` + `git show` 只**物化状态作用域**到私有临时目录，越界条目直接拒绝整次读取，读不到就报 `unavailable — 原因`（绝不降级成"什么都不欠"），全程不写项目。`loadModel(root, { stateRoot })` 让状态侧读取（Baseline、Evidence、账本、Spine、标准比较审批）走这条通路，Contract/源码仍只从候选读。
+
+接线：`resume.mjs` / `coverage.mjs` / `attempts.mjs` 的 `--durable-state`，`delivery status --durable-state`，以及插件的 `delivery_resume`（默认开启，`offline: true` 关闭）、`delivery_coverage`、`delivery_attempts`。
+
+同时修掉两个会让结果继续错判的集成点，它们只有在真实状态上跑才会暴露：
+
+1. `standardBindings` 的 **Spine 摘要**取自工作树，而累积 Spine 是状态侧产物 → 晋升后 Spine 变长，**被晋升的那条 Evidence 反而对自己的晋升判为 stale**。现在 `spineRoot` 指向状态侧（[common.mjs](packages/delivery-assured/scripts/lib/common.mjs)）。
+2. `computeConvergence` 默认在工作树找账本 → 读到状态账本时仍报 `attempt log missing; budget history unknown`。现在用模型自己记录的账本位置（[convergence.mjs](packages/delivery-assured/scripts/lib/convergence.mjs)）。
+
+验证（在 `c5b50e8` 的干净检出上，只带 `--durable-state`，不做任何手工铺开）：
+
+```text
+baseline     : BL-002 @ c5b50e8d4379
+durable state: c25962e3867d on refs/heads/delivery-state/main (read-only; nothing was written into this project)
+stale evidence - ; manual review pending - ; verified 18
+budget: attempts 6/8 replans 1/2
+PASS resume: 18 verified, 0 owed
+```
+
+`delivery status --durable-state` 同样从"none recorded locally"变为 `BL-002 @ c5b50e8d4379`，18 项义务 VERIFIED；`attempts --durable-state` 报 `PASS attempts: 6 attempts, 2 left`。新增 [4 项真实 Git 演练](packages/delivery-assured/tests/durable-state.test.mjs)（越界拒绝、不可读如实报告、只取作用域且不写项目、缺失作用域按 CI 语义回落）并接入 build gate。
+
+仍未解决：插件未挂载进 `desktop` profile，所以真实桌面会话里还没有这些工具；用不匹配的宿主运行时启动时，插件按设计不注册工具。
+
 另有两处激活事实需要记清：
 
 1. 用户在用的 `desktop` profile **仍未挂载插件**（本轮刻意未改动它，`plugins/dsh-delivery-assured/install.mjs` 对运行中的 desktop profile 默认拒绝写入）。所以在真实桌面会话里目前**没有任何 `delivery_*` 工具**，能力已就位但未接线。

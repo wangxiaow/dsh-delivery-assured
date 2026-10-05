@@ -145,7 +145,7 @@ if (!existsSync(pluginRoot)) {
   }
 }
 
-for (const file of ['evidence.test.mjs', 'verification.test.mjs', 'convergence.test.mjs', 'completion.test.mjs']) {
+for (const file of ['evidence.test.mjs', 'verification.test.mjs', 'convergence.test.mjs', 'completion.test.mjs', 'durable-state.test.mjs']) {
   const result = spawnSync(process.execPath, [join(packRoot, 'tests', file)], { cwd: root, encoding: 'utf8' })
   if (result.status !== 0) failures.push(`${file} failed: ${failureDetail(result)}`)
 }

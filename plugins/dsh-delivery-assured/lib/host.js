@@ -154,13 +154,13 @@ export function apply(ctx, config = {}) {
       async execute(args, exec) {
         const ready = requireReady(exec)
         if (!ready.ok) return ready
-        const argv = ['--view', args.view]
+        const argv = ['--view', args.view, '--durable-state']
         if (args.slice) argv.push('--slice', args.slice)
         if (args.candidate) argv.push('--candidate', args.candidate)
         const result = await runScript(ready.ctx, ctx.shell, 'coverage.mjs', argv)
         return {
           ...summarize(result, {
-            keep: ['view', 'candidate', 'buckets', 'gap_classes', 'blocking', 'critical_violations'],
+            keep: ['view', 'candidate', 'durable_state', 'buckets', 'gap_classes', 'blocking', 'critical_violations'],
           }),
           project: ready.ctx.project.root,
         }
@@ -172,7 +172,7 @@ export function apply(ctx, config = {}) {
     defineTool({
       name: 'delivery_resume',
       description:
-        'Rebuild the trustworthy starting point after a session change, a gap or a machine change: protected references, CI evidence and attempts, recomputed Coverage, the untouched local candidate diff, remaining budget, blockers and the next verification step. Run this first when resuming work. ' +
+        'Rebuild the trustworthy starting point after a session change, a gap or a machine change: protected references, the durable Baseline and CI evidence, recomputed Coverage, the untouched local candidate diff, remaining budget, blockers and the next verification step. It reads `refs/heads/delivery-state/main` read-only (Baseline metadata, Evidence, the attempt ledger and the accumulated Spine live there, not in the working tree) and writes nothing; `offline: true` skips that read and says so. Run this first when resuming work. ' +
         AUTHORITY_NOTE,
       parameters: {
         offline: {
@@ -184,11 +184,14 @@ export function apply(ctx, config = {}) {
       async execute(args, exec) {
         const ready = requireReady(exec)
         if (!ready.ok) return ready
-        const argv = args.offline ? ['--offline'] : []
+        // A session has no CI-style state overlay. Without reading the durable state ref
+        // this reports a delivered project as blocked: the attempt ledger references a
+        // comparison approval, and the Baseline and Evidence, that only exist there.
+        const argv = args.offline ? ['--offline'] : ['--durable-state']
         const result = await runScript(ready.ctx, ctx.shell, 'resume.mjs', argv)
         return {
           ...summarize(result, {
-            keep: ['project', 'candidate', 'dirty', 'baseline_ref', 'remote', 'local_baseline', 'evidence', 'current_slice', 'owed', 'budget', 'blockers', 'notes', 'next_actions'],
+            keep: ['project', 'candidate', 'dirty', 'baseline_ref', 'remote', 'local_baseline', 'durable_state', 'evidence', 'current_slice', 'owed', 'budget', 'blockers', 'notes', 'next_actions'],
           }),
           project: ready.ctx.project.root,
         }
@@ -209,11 +212,12 @@ export function apply(ctx, config = {}) {
       async execute(args, exec) {
         const ready = requireReady(exec)
         if (!ready.ok) return ready
-        const argv = args.slice ? ['--slice', args.slice] : []
+        const argv = ['--durable-state']
+        if (args.slice) argv.push('--slice', args.slice)
         const result = await runScript(ready.ctx, ctx.shell, 'attempts.mjs', argv)
         return {
           ...summarize(result, {
-            keep: ['slice', 'limits', 'counted', 'infra_aborted', 'replans', 'per_root_cause', 'progress', 'oscillation', 'critical_open', 'requires_replan', 'budget_blocked'],
+            keep: ['slice', 'durable_state', 'limits', 'counted', 'infra_aborted', 'replans', 'per_root_cause', 'progress', 'oscillation', 'critical_open', 'requires_replan', 'budget_blocked'],
           }),
           project: ready.ctx.project.root,
         }

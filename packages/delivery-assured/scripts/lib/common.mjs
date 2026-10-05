@@ -405,13 +405,19 @@ export function loadAttempts(root, cfg) {
 /**
  * Build the binding fingerprint of the current standards and configuration.
  * A change to any component invalidates earlier PASS records (全量重验).
+ *
+ * `spineRoot` exists because the accumulated Spine is a durable-state artifact: CI
+ * overlays `refs/heads/delivery-state/main` before verifying, and a session can pass the
+ * same read-only view. Everything else here is candidate/standard material and is read
+ * from `root`; taking the Spine from the wrong side would make a promoted record look
+ * stale against its own promotion.
  */
-export function standardBindings(root, cfg) {
+export function standardBindings(root, cfg, { spineRoot = root } = {}) {
   const contractDigest = fileDigest(abs(root, cfg.paths.contract))
   const manifestDigest = fileDigest(abs(root, cfg.paths.acceptanceManifest))
   const specFiles = listFiles(abs(root, cfg.paths.acceptanceSpec), (p) => !p.endsWith('manifest.yaml'))
   const verifierDigest = fileDigest(abs(root, cfg.paths.verifier))
-  const spineDigest = fileDigest(abs(root, cfg.paths.spineManifest))
+  const spineDigest = fileDigest(abs(spineRoot, cfg.paths.spineManifest))
   const migrationFiles = listFiles(join(root, 'migrations'), () => true)
   const lockDigest =
     fileDigest(join(root, 'pnpm-lock.yaml')) ||

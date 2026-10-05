@@ -3,6 +3,7 @@ import { appendFileSync, readFileSync } from 'node:fs'
 import { EXIT, InputError, abs, findProjectRoot, finish, parseArgs, rel } from './lib/common.mjs'
 import { loadModel } from './lib/model.mjs'
 import { attemptFromCI, computeConvergence, resolveSlice, validateAttempt } from './lib/convergence.mjs'
+import { fetchDurableState } from './lib/durable-state.mjs'
 
 function main() {
   const opts = parseArgs(process.argv.slice(2), {
@@ -15,16 +16,38 @@ function main() {
     'falsified-assumption': 'value', 'previous-approach': 'value', 'new-approach': 'value',
     'next-check': 'list', 'preserved-obligation': 'list', 'evidence-ref': 'list',
     'scope-changed': 'boolean', 'comparison-approval-ref': 'value',
+    'durable-state': 'boolean',
   })
   const root = findProjectRoot(opts.project)
-  const model = loadModel(root)
+  // Reporting reads the ledger the platform actually holds. A write (`--record`/`--replan`)
+  // still appends to the working tree: the durable state is moved by CI, never by a session.
+  const durable = opts['durable-state']
+    ? fetchDurableState({ repoRoot: root, fallbackRoot: root })
+    : { available: false, sha: null, root: null, reason: null, dispose() {} }
+  let model
+  try {
+    model = loadModel(root, { stateRoot: durable.available ? durable.root : null })
+  } catch (error) {
+    durable.dispose?.()
+    throw error
+  }
   const logPath = abs(root, model.cfg.paths.attemptsLog)
   const modes = [opts.record, opts.replan, opts['import-ci']].filter(Boolean)
   if (modes.length > 1) throw new InputError('choose one of --record, --replan, --import-ci')
-  if (modes.length) return record(model, logPath, opts)
+  if (modes.length) {
+    durable.dispose?.()
+    return record(model, logPath, opts)
+  }
   const budget = computeConvergence(model, { slice: opts.slice })
   const human = [
     `log: ${rel(root, logPath)}`,
+    `durable state: ${
+      !opts['durable-state']
+        ? '(not read; pass --durable-state for the ledger and Baseline the platform holds)'
+        : durable.available
+          ? `${durable.sha.slice(0, 12)} on ${durable.branch} (read-only)`
+          : `unavailable — ${durable.reason}`
+    }`,
     `stable slice key: ${budget.slice_key || '(all slices)'}`,
     `attempts ${budget.total}/${budget.limits.total_attempt_limit}; replans ${budget.replans}/${budget.limits.replan_limit}; remaining ${budget.remaining ?? '(unknown)'}`,
     `same-root-cause ${budget.maxSameRootCause}; no-progress ${budget.noProgressStreak}; final trusted pass ${budget.terminal_passed}`,
@@ -35,7 +58,9 @@ function main() {
   else if (budget.requiresReplan) human.push('ACTION stop patching: write a Replan Record; cumulative counters do not reset')
   else if (budget.terminal_passed) human.push('ACTION final allowed attempt passed; this diagnostic does not promote a Baseline')
   else if (!budget.blocked) human.push(`ACTION ${budget.remaining} attempt(s) remain`)
-  return finish({ code: budget.blocked ? EXIT.FAIL : EXIT.PASS, script: 'attempts', summary: `${budget.total} attempts, ${budget.remaining} left`, human, json: { project: root, log: rel(root, logPath), slice: opts.slice || null, ...budget }, color: !opts.quiet, jsonRequested: opts.json === true })
+  const outcome = finish({ code: budget.blocked ? EXIT.FAIL : EXIT.PASS, script: 'attempts', summary: `${budget.total} attempts, ${budget.remaining} left`, human, json: { project: root, log: rel(root, logPath), durable_state: { requested: opts['durable-state'] === true, available: durable.available === true, sha: durable.sha || null, reason: durable.reason || null }, slice: opts.slice || null, ...budget }, color: !opts.quiet, jsonRequested: opts.json === true })
+  durable.dispose?.()
+  return outcome
 }
 
 function record(model, logPath, opts) {

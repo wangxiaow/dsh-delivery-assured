@@ -13,6 +13,7 @@ import {
   blockingForView,
   collectCriticalViolations,
   coverageRows,
+  fetchDurableState,
   findProjectRoot,
   gitRevision,
   loadModel,
@@ -20,10 +21,18 @@ import {
 
 export async function statusCommand(opts) {
   const root = findProjectRoot(opts.project)
+  // The Baseline metadata, Evidence and accumulated Spine live on the durable-state ref;
+  // CI overlays it before verifying, and `--durable-state` gives the CLI the same
+  // read-only view so `delivery status` can see the delivered Baseline instead of
+  // reporting that none was recorded locally.
+  const durable = opts['durable-state']
+    ? fetchDurableState({ repoRoot: root, fallbackRoot: root })
+    : { available: false, sha: null, root: null, reason: null, dispose() {} }
   let model
   try {
-    model = loadModel(root)
+    model = loadModel(root, { stateRoot: durable.available ? durable.root : null })
   } catch (error) {
+    durable.dispose?.()
     if (error instanceof InputError) {
       throw new InputError(`${error.message} (looked for a delivery repository at ${root})`)
     }
@@ -113,5 +122,6 @@ export async function statusCommand(opts) {
   out.push('')
   out.push(payload.note)
   process.stdout.write(`${out.join('\n')}\n`)
+  durable.dispose?.()
   return payload.exit_code
 }

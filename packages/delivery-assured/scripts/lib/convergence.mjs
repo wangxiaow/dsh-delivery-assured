@@ -158,7 +158,7 @@ export function criticalOpenFromModel(model, options = {}) {
   return open
 }
 
-export function computeConvergence(model, { slice = null, logExists = existsSync(abs(model.root, model.cfg.paths.attemptsLog)), candidate, parentBaseline } = {}) {
+export function computeConvergence(model, { slice = null, logExists = model.attemptsLog?.exists ?? existsSync(abs(model.root, model.cfg.paths.attemptsLog)), candidate, parentBaseline } = {}) {
   const limits = model.cfg.budget
   const invalid = []
   for (const k of ['total_attempt_limit', 'same_root_cause_limit', 'no_progress_window', 'replan_limit']) if (!integer(limits[k]) || (k !== 'replan_limit' && limits[k] === 0)) invalid.push({ line: 0, message: `invalid budget ${k}` })

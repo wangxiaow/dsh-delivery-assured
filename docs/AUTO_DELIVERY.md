@@ -49,6 +49,26 @@
 此前三次成功验证会被记成同一个根因失败三次，导致后续正常迭代在晋升时被判为
 “需要 Replan”，而事实上并没有反复失败。历史与总预算依然累计，成功不会清零任何东西。
 
+## 会话如何看到权威状态（只读）
+
+Baseline 元数据、Evidence、尝试账本、累积 Spine 与标准比较审批**只存在于
+`refs/heads/delivery-state/main`**；CI 的 verify/promote 会先把这份状态铺进暂存的工作区，
+所以它们看到的是真实状态。会话没有对等的铺开步骤，因此仅读工作树的会话会把**已交付**的
+项目报成阻塞。
+
+现在会话侧有了一条明确的只读通路：
+
+- `delivery_resume` 默认读该 ref（`offline: true` 时跳过并说明），`delivery_coverage` 与
+  `delivery_attempts` 同样读取；等价脚本参数是 `--durable-state`（`delivery status` 也支持）。
+- 它只取 [四个状态作用域](packages/delivery-assured/scripts/lib/durable-state.mjs)（`.agent/attempts.jsonl`、
+  `.agent/reviews.yaml`、`.agent/STANDARD_CHANGES.yaml`、`ci/mvp-ready.json`、
+  `tests/spine/manifest.yaml` 与 `ci/{baseline,evidence,recording}/`），**任何越界条目都会让整次读取被拒绝**。
+- 它从不写入项目：内容落在私有临时目录，读完即删。状态分支缺某个作用域时，按 CI 的语义回落到
+  候选自己的副本；Contract、源码等**永不**从状态覆盖层取。
+- 读不到就如实报告 `unavailable — <原因>`，并且**绝不**降级成"什么都不欠"。
+
+这是只读诊断，不构成 Evidence，也不推进 Baseline。
+
 ## 限制（必须如实报告）
 
 - 自动结论只覆盖机器可观察结果。交互易用性等主观判断不在其中；需要时由用户主动

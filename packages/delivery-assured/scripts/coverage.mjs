@@ -17,6 +17,7 @@ import { EXIT, InputError, abs, findProjectRoot, finish, gitRevision, parseArgs,
 import { blockingForView, collectCriticalViolations, coverageRows } from './lib/coverage-core.mjs'
 import { loadModel, scanDriverForAssertions, specDiffAgainstProtected } from './lib/model.mjs'
 import { scopeForSlice } from './lib/selection.mjs'
+import { fetchDurableState } from './lib/durable-state.mjs'
 
 function main() {
   const opts = parseArgs(process.argv.slice(2), {
@@ -27,16 +28,29 @@ function main() {
     json: 'boolean',
     quiet: 'boolean',
     all: 'boolean',
+    'durable-state': 'boolean',
   })
   if (opts.help) {
     process.stdout.write('coverage — recomputed obligation coverage (--view slice|mvp)\n')
+    process.stdout.write('  --durable-state  also read refs/heads/delivery-state/main (Baseline, Evidence, Spine)\n')
     return EXIT.PASS
   }
   const view = opts.view || 'slice'
   if (!['slice', 'mvp'].includes(view)) throw new InputError(`--view must be slice or mvp (got ${view})`)
 
   const root = findProjectRoot(opts.project)
-  const model = loadModel(root)
+  // The Baseline, Evidence and accumulated Spine live on the durable-state ref. Without
+  // reading it a session sees only the working tree and reports delivered work as stale.
+  const durable = opts['durable-state']
+    ? fetchDurableState({ repoRoot: root, fallbackRoot: root })
+    : { available: false, sha: null, root: null, reason: null, dispose() {} }
+  let model
+  try {
+    model = loadModel(root, { stateRoot: durable.available ? durable.root : null })
+  } catch (error) {
+    durable.dispose?.()
+    throw error
+  }
   const candidate = opts.candidate || gitRevision(root, 'HEAD')
   const trustedIssuer = model.cfg.ci?.trusted_issuer || null
   const localBaseline = model.baselines.length > 0 ? model.baselines[model.baselines.length - 1] : null
@@ -115,7 +129,7 @@ function main() {
   human.push('')
   human.push('note: STATE.yaml DONE was not consulted; statuses come from the Contract, the frozen manifest and CI records.')
 
-  return finish({
+  const outcome = finish({
     code,
     script: 'coverage',
     summary:
@@ -128,6 +142,12 @@ function main() {
       project: root,
       candidate,
       parent_baseline: parentBaseline,
+      durable_state: {
+        requested: opts['durable-state'] === true,
+        available: durable.available === true,
+        sha: durable.sha || null,
+        reason: durable.reason || null,
+      },
       rows,
       buckets,
       gap_classes: gapClasses,
@@ -139,6 +159,8 @@ function main() {
     color: !opts.quiet,
     jsonRequested: opts.json === true,
   })
+  durable.dispose?.()
+  return outcome
 }
 
 function currentSliceRows(model, sliceId) {

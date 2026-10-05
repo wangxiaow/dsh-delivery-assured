@@ -75,18 +75,25 @@ export const SLOTS_ALLOWED_EMPTY = {
   ],
 }
 
-export function loadModel(root) {
+export function loadModel(root, { stateRoot = null } = {}) {
   const cfg = loadProjectConfig(root)
   const { contract, checklists, contractPath } = loadContract(root)
   const acceptance = loadAcceptance(root, cfg)
-  const spine = loadSpine(root, cfg)
+  // Baseline metadata, Evidence, the attempt ledger, the accumulated Spine and the
+  // recorded standard changes are durable-state artifacts: CI overlays
+  // `refs/heads/delivery-state/main` onto its staged checkout before verifying. A session
+  // can pass the equivalent read-only view as `stateRoot` (see lib/durable-state.mjs);
+  // without it these readers can only see the working tree, which is why a delivered
+  // project looks blocked in a fresh session.
+  const stateSide = stateRoot || root
+  const spine = loadSpine(stateSide, cfg)
   const slices = loadSlices(root, cfg)
-  const reviews = loadReviews(root, cfg)
-  const evidence = loadEvidence(root, cfg)
-  const baselines = loadBaselines(root, cfg)
-  const attempts = loadAttempts(root, cfg)
+  const reviews = loadReviews(stateSide, cfg)
+  const evidence = loadEvidence(stateSide, cfg)
+  const baselines = loadBaselines(stateSide, cfg)
+  const attempts = loadAttempts(stateSide, cfg)
   const state = loadState(root, cfg)
-  const standardChanges = readYaml(abs(root, '.agent/STANDARD_CHANGES.yaml'), { required: false })?.changes || []
+  const standardChanges = readYaml(abs(stateSide, '.agent/STANDARD_CHANGES.yaml'), { required: false })?.changes || []
   const obligations = obligationIndex(contract)
   const checklistsById = new Map()
   for (const checklist of checklists) {
@@ -102,7 +109,10 @@ export function loadModel(root) {
   for (const row of contract.implicit_obligations || []) {
     if (row && row.checklist_id) dispositions.set(row.checklist_id, row)
   }
-  const currentBindings = standardBindings(root, cfg)
+  const currentBindings = standardBindings(root, cfg, { spineRoot: stateSide })
+  // Where the attempt ledger was actually read from, so a budget check does not look for
+  // it in the working tree when the ledger came from the durable-state overlay.
+  const attemptsLogPath = abs(stateSide, cfg.paths.attemptsLog)
   return {
     root,
     cfg,
@@ -123,6 +133,7 @@ export function loadModel(root) {
     obligations,
     currentBindings,
     standardChanges,
+    attemptsLog: { path: attemptsLogPath, exists: existsSync(attemptsLogPath) },
   }
 }
 

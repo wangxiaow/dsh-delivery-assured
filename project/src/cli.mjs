@@ -16,7 +16,7 @@ import { EXIT, InputError } from '../../packages/delivery-assured/scripts/lib/in
 const USAGE = `delivery — what do I still owe?
 
 Usage:
-  delivery status [--project <path>] [--json] [--all]
+  delivery status [--project <path>] [--json] [--all] [--durable-state]
 
 Commands:
   status    list every required obligation with its recomputed status and basis
@@ -25,6 +25,8 @@ Options:
   --project <path>   repository to inspect (default: nearest .agent marker upward)
   --json             emit the same facts as JSON
   --all              include non-required obligations
+  --durable-state    also read refs/heads/delivery-state/main (Baseline, Evidence, Spine);
+                     read-only, and the only way to see a promoted Baseline
   -h, --help         show this help
 
 Exit codes: 0 no blocking gap, 1 blocking gap found, 2 input/configuration error.
@@ -34,7 +36,7 @@ and only its Promotion job may advance refs/heads/baseline/*.`
 const COMMANDS = new Set(['status', 'help'])
 
 function parse(argv) {
-  const opts = { command: null, project: null, json: false, all: false }
+  const opts = { command: null, project: null, json: false, all: false, 'durable-state': false }
   const args = [...argv]
   while (args.length > 0) {
     const token = args.shift()
@@ -44,6 +46,7 @@ function parse(argv) {
     }
     if (token === '--json') { opts.json = true; continue }
     if (token === '--all') { opts.all = true; continue }
+    if (token === '--durable-state') { opts['durable-state'] = true; continue }
     if (token === '--project') {
       const value = args.shift()
       if (value === undefined) throw new InputError('--project requires a path')
