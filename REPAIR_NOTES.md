@@ -280,6 +280,36 @@ PASS resume: 18 verified, 0 owed
 1. 用户在用的 `desktop` profile **仍未挂载插件**（本轮刻意未改动它，`plugins/dsh-delivery-assured/install.mjs` 对运行中的 desktop profile 默认拒绝写入）。所以在真实桌面会话里目前**没有任何 `delivery_*` 工具**，能力已就位但未接线。
 2. 用 CLI 安装的 dsh 启动（`$DSH_HOME/profiles/node_modules` 的 0.1.5-rc.3 线）时，插件按设计**拒绝注册全部工具**，只加载 Skill/guard/kernel——本次第一次 headless 尝试就是这样（"delivery_ci does not exist in this session"）。只有宿主运行时与声明的 `^0.2.0-rc.2` 一致时工具才注册。这是正确的防御行为，但意味着"装进某个 profile"不等于"工具一定可用"，必须用匹配的宿主验证。
 
+### BL-003：把会话侧修复本身交付掉
+
+落地这套改动改了 `packages/**` 与 `plugins/**`，因此按 `ci-stage.mjs` 的规则**无法经 PR 集成**，第三次一次性解除保护后快进，main = `fd575a5`。为免留下"main 尖端没有被验证过的候选"，同一条链路又跑了一轮：verify `37265252009`（11/11 Required、0 Spine 失败）→ 采集 `37265301735` → 无 owner 回执的自动终局 `37265376886` → **BL-003**，`refs/heads/baseline/main` = `fd575a5`，父基线 BL-002，`remaining_outcomes: []`、`manual_reviews_pending: []`、`owner_confirmation_ref` 为空。预算随之变为 **7/8**、Replan 1/2（只剩 1 次尝试）。
+
+交付版本上的最终恢复读数（真实工作区，main = `fd575a5`，无任何手工铺开）：
+
+```text
+candidate    : fd575a553630
+baseline     : BL-003 @ fd575a553630 (refs/heads/baseline/main)
+durable state: 4c40c80fd19b on refs/heads/delivery-state/main (read-only; nothing was written into this project)
+PASS resume: 18 verified, 0 owed
+```
+
+### 仍未解决：插件 shell 接缝里 git 读不到仓库（本轮实测，未修）
+
+用应用自带运行时（0.2.0-rc.2）在独立 profile 里启动 headless 会话，让模型真的调用
+`delivery_resume` 时，返回的仍是修复前的形态：`candidate: null`、`notes` 含
+"not a git repository: local diff cannot be classified" 与 "remote origin has no
+refs/heads/baseline/main"，并且没有 `durable_state` 字段——即脚本在宿主接缝里**读不到仓库**。
+同一个 profile 里 `delivery_ci` 是成功的（它用绝对路径调 `gh`，不需要碰工作区）。
+
+已排除的原因：**不是环境变量**。把 pack 脚本按 `bridge.js` 的 `runScript` 方式启动
+（`env` 只给 `{ ELECTRON_RUN_AS_NODE: '1' }`、`workdir` = packRoot），`git rev-parse` 与
+`--durable-state` 都正常。因此剩下的嫌疑是 `runScript` 传给 shell 的 `sandboxPolicy`／会话
+工作区：会话的 workspace 与 `G:\dsh\YH2` 不一致时，沙箱会拒绝脚本访问该仓库。
+
+这条**只有真实宿主验证才会暴露**——插件现有的 shell 替身测试全绿也照样漏掉。修法与验证方式
+（在会话工作区等于项目路径时再跑同一调用）已明确，但尚未实现，因此**"会话内自助恢复"目前只在
+脚本直跑时成立，经插件接缝尚不成立**。
+
 ## 尚欠工程与外部实证
 
 1. **可运行、可独立实证的隔离后端仍未实现。** 已增加[限制型请求模块](ci/tools/ci-isolation.mjs)：固定 digest、non-root、无网络、只读输入、独立输出、资源限制、cap-drop、无主机环境继承及 shell；注入执行器的零退出始终不授予 runtime trust 或 Promotion。这个模块没有真实 executor，没有锁定/独立证明实际 mount 和 namespace；现有 verifier 的项目内写入也尚未适配只读输入，不能把请求参数或合成测试当作端到端可用后端。 本机 Get-Command docker 未发现 Docker CLI，未连接 daemon 或拉取镜像，不能以本机现有环境实证容器隔离。 候选和 verifier 目前不能凭复制 canonical 文件获得进程/文件系统隔离保证。collector 忽略候选自行提交的 trust 字段，仅将 transport 标为已确认，runtime_isolation_verified 固定 false；这些观察不能关闭 Coverage。**本轮已按 owner 决定把隔离从晋升硬门禁降级为告警：** `promotion.yml` 不再无条件阻塞，告警写入 Baseline 元数据 `runtime_isolation`，transport/仓库/run 身份/revision 来源仍阻塞。真实隔离后端依旧是欠账，不能用自报布尔值替代。
