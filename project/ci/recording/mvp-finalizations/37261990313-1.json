@@ -1,0 +1,118 @@
+{
+  "schema": "delivery-mvp-readiness/v2",
+  "completion_mode": "independent_auto",
+  "ready": true,
+  "blocking": [],
+  "evidence_id": "ci:verify:37261822269-1",
+  "evidence_digest": "ada94cc0763e3698f7f54fd44e0e2e89fb596b17a3ce5927cf4b9cc91d517732",
+  "source_run": "37261822269-1",
+  "finalization_run": "37261990313-1",
+  "finalizer_revision": "c5b50e8d437986564e8a190a748ef142ebbaff6e",
+  "bindings": {
+    "code_revision": "c5b50e8d437986564e8a190a748ef142ebbaff6e",
+    "contract_revision": "9bd6454a96475363db8d48fe00b0d19d6b0a0dfb",
+    "contract_digest": "4d9c60dc52722f29783ad193f39142cf195b06e479f1fdce4ab1e156f61b5c44",
+    "acceptance_revision": "9bd6454a96475363db8d48fe00b0d19d6b0a0dfb",
+    "acceptance_manifest_digest": "1f0686eb15706f551909e4bf95c136465501d4b66ccf5319a23693e81c8caa56",
+    "acceptance_digest": "c1e8355818c282776db0e3f81f9d3a0c76dfa5dadef832186319b02f7979c6ff",
+    "verifier_config_revision": "c5b50e8d437986564e8a190a748ef142ebbaff6e",
+    "verifier_config_digest": "f4c43aae28c1c3d8530adc52db3a74113a4bb59db927f8cb3070f477da9d8d3e",
+    "dependency_lock_digest": null,
+    "migration_digest": null,
+    "spine_manifest_digest": "1982e6a47532a94b0a6b4987282742c051e32bc687a22dc821b7ddf0b62a69b2",
+    "slice_manifest_digest": "7e9eb28517c3045afcf48c46780bc2a8ecffbd92d6fedd7da9f8ee5e9d92c914",
+    "parent_baseline": "BL-001",
+    "image_digest": "sha256:fe117f2f95e363ee4a1ddfaaa5d4a3eb3c3f8f5d415b900da11c5d05267f2138",
+    "deployment_id": "artifact-install-37261822269-1"
+  },
+  "environment_kind": "production_like_ci",
+  "required_case_ids": [
+    "A-AUTO-NO-FALSE-PASS",
+    "A-AUTO-POLICY-DEFAULT",
+    "A-BOOTSTRAP-CLEAN-BOOT",
+    "A-CLI-BLOCKED-WITHOUT-CI",
+    "A-CLI-CRITICAL-NOT-LOCAL-PASS",
+    "A-CLI-DOES-NOT-WRITE",
+    "A-CLI-INPUT-REJECTED",
+    "A-CLI-STALE-EVIDENCE",
+    "A-CLI-STATE-DONE-NOT-COMPLETION",
+    "A-CLI-STATUS-JSON",
+    "A-ITERATION-RECOVERY"
+  ],
+  "verification_reference": "https://github.com/wangxiaow/dsh-delivery-assured/actions/runs/37261990313/attempts/1",
+  "automated_reviews": [
+    {
+      "review_id": "R-CORE-JOURNEYS",
+      "result": "PASS",
+      "case_ids": [
+        "A-CLI-STATUS-JSON",
+        "A-CLI-DOES-NOT-WRITE",
+        "A-CLI-INPUT-REJECTED",
+        "A-BOOTSTRAP-CLEAN-BOOT",
+        "A-AUTO-POLICY-DEFAULT",
+        "A-AUTO-NO-FALSE-PASS",
+        "A-ITERATION-RECOVERY"
+      ],
+      "evidence_ref": "ci:verify:37261822269-1",
+      "execution_ref": "https://github.com/wangxiaow/dsh-delivery-assured/actions/runs/37261990313/attempts/1"
+    }
+  ],
+  "release_receipt": {
+    "result": "PASS",
+    "confirmation_ref": "https://github.com/wangxiaow/dsh-delivery-assured/actions/runs/37261990313/attempts/1",
+    "observed_at": "2026-10-05T04:05:26.300Z",
+    "repository": "wangxiaow/dsh-delivery-assured",
+    "bindings": {
+      "code_revision": "c5b50e8d437986564e8a190a748ef142ebbaff6e",
+      "contract_digest": "4d9c60dc52722f29783ad193f39142cf195b06e479f1fdce4ab1e156f61b5c44",
+      "acceptance_digest": "c1e8355818c282776db0e3f81f9d3a0c76dfa5dadef832186319b02f7979c6ff",
+      "image_digest": "sha256:fe117f2f95e363ee4a1ddfaaa5d4a3eb3c3f8f5d415b900da11c5d05267f2138",
+      "deployment_id": "artifact-install-37261822269-1"
+    },
+    "prerequisites": [
+      {
+        "id": "verify-required-checks",
+        "result": "PASS",
+        "observation": {
+          "observed": true,
+          "candidate": "c5b50e8d437986564e8a190a748ef142ebbaff6e",
+          "checks": [
+            {
+              "name": "verify candidate",
+              "status": "completed",
+              "conclusion": "success"
+            },
+            {
+              "name": "structural checks",
+              "status": "completed",
+              "conclusion": "success"
+            }
+          ]
+        }
+      },
+      {
+        "id": "baseline-ref-readable",
+        "result": "PASS",
+        "observation": {
+          "observed": true,
+          "ref": "refs/heads/baseline/main",
+          "sha": "038cb0ae1e6b38a71e5af28a2668ecc98491af7f"
+        }
+      },
+      {
+        "id": "verification-workflow-active",
+        "result": "PASS",
+        "observation": {
+          "observed": true,
+          "workflow": "verify.yml",
+          "state": "active"
+        }
+      }
+    ]
+  },
+  "limitations": [
+    "本仓库没有独立 staging 通道：验证在受保护 CI runner 上安装并运行打包产物，报告 revision 与 digest",
+    "不提供容器/命名空间级隔离；隔离后端仍是欠账，runtime_isolation 只作为告警记录在 Baseline 元数据",
+    "自动验收只覆盖机器可观察结果：交互易用性等主观判断不在自动结论内，需要时由用户主动发起人工评审"
+  ]
+}

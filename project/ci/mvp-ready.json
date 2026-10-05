@@ -1,0 +1,21 @@
+{
+  "mvp_ready": true,
+  "completion_mode": "independent_auto",
+  "baseline_id": "BL-002",
+  "code_revision": "c5b50e8d437986564e8a190a748ef142ebbaff6e",
+  "image_digest": "sha256:fe117f2f95e363ee4a1ddfaaa5d4a3eb3c3f8f5d415b900da11c5d05267f2138",
+  "deployment_id": "artifact-install-37261822269-1",
+  "environment_kind": "production_like_ci",
+  "environment_limitations": [
+    "本仓库没有独立 staging 通道：验证在受保护 CI runner 上安装并运行打包产物，报告 revision 与 digest",
+    "不提供容器/命名空间级隔离；隔离后端仍是欠账，runtime_isolation 只作为告警记录在 Baseline 元数据",
+    "自动验收只覆盖机器可观察结果：交互易用性等主观判断不在自动结论内，需要时由用户主动发起人工评审"
+  ],
+  "evidence_refs": [
+    "ci:verify:37261822269-1"
+  ],
+  "readiness_ref": "ci/recording/mvp-finalizations/37261990313-1.json",
+  "owner_confirmation_ref": null,
+  "verification_reference": "https://github.com/wangxiaow/dsh-delivery-assured/actions/runs/37261990313/attempts/1",
+  "promotion_run_id": "37261990313-1"
+}
