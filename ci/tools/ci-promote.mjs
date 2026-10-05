@@ -533,7 +533,12 @@ async function main() {
       const env = { ...process.env, GIT_INDEX_FILE: join(indexDir, 'index'), GIT_AUTHOR_NAME: 'Promotion CI', GIT_AUTHOR_EMAIL: 'promotion@example.invalid', GIT_COMMITTER_NAME: 'Promotion CI', GIT_COMMITTER_EMAIL: 'promotion@example.invalid' }
       const indexed = (args) => execFileSync('git', args, { cwd: root, env, encoding: 'utf8' }).trim()
       indexed(['read-tree', ...(stateParent ? [stateParent] : ['--empty'])])
-      indexed(['add', '--', 'ci/baseline', 'ci/evidence', cfg.paths.spineManifest, cfg.paths.attemptsLog,
+      // `-f` is load-bearing, not cosmetic. `.gitignore` deliberately ignores the durable
+      // state paths (`**/ci/evidence/`, `**/.agent/attempts.jsonl`) so that a working-tree
+      // `git add -A` in main cannot commit state by accident. This temp index *is* the
+      // deliberate state commit, so its explicit path list has to override that rule;
+      // without it the promotion validates, then dies while persisting what it just proved.
+      indexed(['add', '-f', '--', 'ci/baseline', 'ci/evidence', cfg.paths.spineManifest, cfg.paths.attemptsLog,
         ...(finalReadiness?.ready ? ['ci/mvp-ready.json', metadata.mvp_readiness_ref] : []),
         ...(finalReadiness?.ready && Array.isArray(finalReadiness.reviews) ? ['.agent/reviews.yaml'] : []),
         ...(finalReadiness?.ready && finalReadiness.standard_change ? ['.agent/STANDARD_CHANGES.yaml'] : [])])
