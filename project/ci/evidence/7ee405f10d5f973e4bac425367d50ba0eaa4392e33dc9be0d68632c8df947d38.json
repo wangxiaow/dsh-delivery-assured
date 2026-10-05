@@ -1,0 +1,225 @@
+{
+  "evidence_id": "ci:verify:37261822269-1",
+  "convergence": {
+    "hypothesis": "S2 closes the automatic delivery loop on the final integrated revision: completion is decided by actually executed acceptance plus platform-observed release prerequisites, with no owner receipt, and a missing execution or unobserved prerequisite blocks instead of passing",
+    "root_cause_key": "fixed-candidate-verification",
+    "slice_key": "S2"
+  },
+  "scope": {
+    "slice_id": "S2",
+    "slice_key": "S2",
+    "obligation_ids": [
+      "J-DELIVERY-STATUS",
+      "C-STATUS-COMPUTATION",
+      "J-DELIVERY-STATUS.ready",
+      "J-DELIVERY-STATUS.rejected",
+      "C-INPUT-DIAGNOSTICS",
+      "BR-STATUS-DERIVED",
+      "BR-EVIDENCE-NOT-LOCAL",
+      "J-CI-AUTHORITY",
+      "J-CI-AUTHORITY.local_only",
+      "J-CI-AUTHORITY.blocked_without_ci",
+      "C-BOOTSTRAP",
+      "C-AUTO-COMPLETION",
+      "J-AUTO-DELIVERY",
+      "J-AUTO-DELIVERY.accepted",
+      "BR-AUTO-EVIDENCE-ONLY",
+      "J-AUTO-DELIVERY.no_false_pass",
+      "C-RECOVERY",
+      "J-AUTO-DELIVERY.recovered"
+    ],
+    "required_case_ids": [
+      "A-AUTO-NO-FALSE-PASS",
+      "A-AUTO-POLICY-DEFAULT",
+      "A-BOOTSTRAP-CLEAN-BOOT",
+      "A-CLI-BLOCKED-WITHOUT-CI",
+      "A-CLI-CRITICAL-NOT-LOCAL-PASS",
+      "A-CLI-DOES-NOT-WRITE",
+      "A-CLI-INPUT-REJECTED",
+      "A-CLI-STALE-EVIDENCE",
+      "A-CLI-STATE-DONE-NOT-COMPLETION",
+      "A-CLI-STATUS-JSON",
+      "A-ITERATION-RECOVERY"
+    ]
+  },
+  "bindings": {
+    "code_revision": "c5b50e8d437986564e8a190a748ef142ebbaff6e",
+    "contract_revision": "9bd6454a96475363db8d48fe00b0d19d6b0a0dfb",
+    "contract_digest": "4d9c60dc52722f29783ad193f39142cf195b06e479f1fdce4ab1e156f61b5c44",
+    "acceptance_revision": "9bd6454a96475363db8d48fe00b0d19d6b0a0dfb",
+    "acceptance_manifest_digest": "1f0686eb15706f551909e4bf95c136465501d4b66ccf5319a23693e81c8caa56",
+    "acceptance_digest": "c1e8355818c282776db0e3f81f9d3a0c76dfa5dadef832186319b02f7979c6ff",
+    "verifier_config_revision": "c5b50e8d437986564e8a190a748ef142ebbaff6e",
+    "verifier_config_digest": "f4c43aae28c1c3d8530adc52db3a74113a4bb59db927f8cb3070f477da9d8d3e",
+    "dependency_lock_digest": null,
+    "migration_digest": null,
+    "spine_manifest_digest": "1982e6a47532a94b0a6b4987282742c051e32bc687a22dc821b7ddf0b62a69b2",
+    "slice_manifest_digest": "7e9eb28517c3045afcf48c46780bc2a8ecffbd92d6fedd7da9f8ee5e9d92c914",
+    "parent_baseline": "BL-001"
+  },
+  "environment": {
+    "kind": "production_like_ci",
+    "image_digest": "sha256:fe117f2f95e363ee4a1ddfaaa5d4a3eb3c3f8f5d415b900da11c5d05267f2138",
+    "config_fingerprint": "f4c43aae28c1c3d8530adc52db3a74113a4bb59db927f8cb3070f477da9d8d3e",
+    "fixture_revision": "9bd6454a96475363db8d48fe00b0d19d6b0a0dfb",
+    "deployment_id": "artifact-install-37261822269-1",
+    "deployed_code_revision": "c5b50e8d437986564e8a190a748ef142ebbaff6e",
+    "deployed_image_digest": "sha256:fe117f2f95e363ee4a1ddfaaa5d4a3eb3c3f8f5d415b900da11c5d05267f2138"
+  },
+  "execution": {
+    "ci_run_id": "37261822269-1",
+    "started_at": "2026-10-05T04:03:05.971Z",
+    "finished_at": "2026-10-05T04:03:28.081Z",
+    "result": "PASS",
+    "required_cases": 11,
+    "executed_cases": 11,
+    "skipped_required_cases": 0,
+    "case_results": [
+      {
+        "case_id": "A-AUTO-NO-FALSE-PASS",
+        "outcome": "passed",
+        "duration_ms": 10,
+        "message": ""
+      },
+      {
+        "case_id": "A-AUTO-POLICY-DEFAULT",
+        "outcome": "passed",
+        "duration_ms": 5,
+        "message": ""
+      },
+      {
+        "case_id": "A-BOOTSTRAP-CLEAN-BOOT",
+        "outcome": "passed",
+        "duration_ms": 463,
+        "message": ""
+      },
+      {
+        "case_id": "A-CLI-BLOCKED-WITHOUT-CI",
+        "outcome": "passed",
+        "duration_ms": 187,
+        "message": ""
+      },
+      {
+        "case_id": "A-CLI-CRITICAL-NOT-LOCAL-PASS",
+        "outcome": "passed",
+        "duration_ms": 603,
+        "message": ""
+      },
+      {
+        "case_id": "A-CLI-DOES-NOT-WRITE",
+        "outcome": "passed",
+        "duration_ms": 416,
+        "message": ""
+      },
+      {
+        "case_id": "A-CLI-INPUT-REJECTED",
+        "outcome": "passed",
+        "duration_ms": 343,
+        "message": ""
+      },
+      {
+        "case_id": "A-CLI-STALE-EVIDENCE",
+        "outcome": "passed",
+        "duration_ms": 383,
+        "message": ""
+      },
+      {
+        "case_id": "A-CLI-STATE-DONE-NOT-COMPLETION",
+        "outcome": "passed",
+        "duration_ms": 383,
+        "message": ""
+      },
+      {
+        "case_id": "A-CLI-STATUS-JSON",
+        "outcome": "passed",
+        "duration_ms": 560,
+        "message": ""
+      },
+      {
+        "case_id": "A-ITERATION-RECOVERY",
+        "outcome": "passed",
+        "duration_ms": 10,
+        "message": ""
+      }
+    ],
+    "gate_results": [
+      {
+        "gate": "build",
+        "outcome": "passed",
+        "reason": "",
+        "command": "node scripts/verify-build.mjs",
+        "exit_code": 0,
+        "duration_ms": 16994,
+        "undeclared": false
+      },
+      {
+        "gate": "clean_boot",
+        "outcome": "passed",
+        "reason": "",
+        "command": "node scripts/check-clean-boot.mjs",
+        "exit_code": 0,
+        "duration_ms": 576,
+        "undeclared": false
+      },
+      {
+        "gate": "persistence_migration",
+        "outcome": "not_applicable",
+        "reason": "只读 CLI 无持久化与迁移入口；migrations/ 不存在，本 gate 明确不适用（v0.5 §13.3）",
+        "command": "",
+        "exit_code": null,
+        "duration_ms": 0,
+        "undeclared": false
+      },
+      {
+        "gate": "slice_acceptance",
+        "outcome": "passed",
+        "reason": "",
+        "command": "node scripts/run-acceptance.mjs",
+        "exit_code": 0,
+        "duration_ms": 3824,
+        "undeclared": false
+      },
+      {
+        "gate": "regression_spine",
+        "outcome": "passed",
+        "reason": "",
+        "command": "node scripts/verify-spine.mjs",
+        "exit_code": 0,
+        "duration_ms": 327,
+        "undeclared": false
+      },
+      {
+        "gate": "deployment",
+        "outcome": "passed",
+        "reason": "",
+        "command": "node scripts/verify-deployment.mjs",
+        "exit_code": 0,
+        "duration_ms": 313,
+        "undeclared": false
+      }
+    ],
+    "artifacts": [
+      ".agent/evidence/acceptance-results.json"
+    ]
+  },
+  "issuer": {
+    "identity": "ci:verify"
+  },
+  "structural_notes": [],
+  "spine_manifest_digest": "1982e6a47532a94b0a6b4987282742c051e32bc687a22dc821b7ddf0b62a69b2",
+  "spine_case_ids": [
+    "A-BOOTSTRAP-CLEAN-BOOT",
+    "A-CLI-BLOCKED-WITHOUT-CI",
+    "A-CLI-CRITICAL-NOT-LOCAL-PASS",
+    "A-CLI-DOES-NOT-WRITE",
+    "A-CLI-INPUT-REJECTED",
+    "A-CLI-STALE-EVIDENCE",
+    "A-CLI-STATE-DONE-NOT-COMPLETION",
+    "A-CLI-STATUS-JSON"
+  ],
+  "blocking": [],
+  "trust": {
+    "transport_verified": true,
+    "runtime_isolation_verified": false
+  }
+}

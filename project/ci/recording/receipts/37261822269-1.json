@@ -1,0 +1,12 @@
+{
+  "repository": "wangxiaow/dsh-delivery-assured",
+  "run_id": 37261822269,
+  "run_attempt": 1,
+  "run_key": "37261822269-1",
+  "verifier_revision": "c5b50e8d437986564e8a190a748ef142ebbaff6e",
+  "conclusion": "success",
+  "path": ".github/workflows/verify.yml",
+  "event": "workflow_dispatch",
+  "head_branch": "main",
+  "content_digest": "30dda2ba88d6ad92d4d02fb6f733be63f4b6dae16b410afa6543cb927ceba20a"
+}
