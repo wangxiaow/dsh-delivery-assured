@@ -1,11 +1,10 @@
 /**
  * The runtime skill this plugin publishes into the session catalog.
  *
- * It carries the working procedure — the order of operations, the default completion
- * rule, the automatic loop inside a session, and the authority boundary — so a session
- * can organize its own work without re-deriving the rules. The Contract, the standards
- * and the Baseline stay authoritative in the repository and in CI; this text is
- * instructions, not state.
+ * It carries the working procedure — the order of operations, the three human
+ * touchpoints, and the authority boundary — so a session can organize its own work
+ * without re-deriving the rules. The Contract, the standards and the Baseline stay
+ * authoritative in the repository and in CI; this text is instructions, not state.
  */
 
 export const SKILL_NAME = 'delivery-assured'
