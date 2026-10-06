@@ -1,6 +1,12 @@
 # DeepSeek Harness 接入（v0.5 §16.5）
 
-本目录保留既有 DSH 接入记录和本地复核方法。宿主版本与 profile 信息属于历史记录（本轮只重新核验了 profile 组合，未重启 Electron、未改动 `desktop` profile）。平台侧事实：真实 CI 已把 `baseline/main` 晋升到 BL-001，并保留 4 次 Candidate attempt 与 1 次 Replan；`main` 上的两项必需检查已启用。插件在独立 profile `delivery-verify` 中经 `--dump-config` 实测可组合，但用户正在使用的 `desktop` profile 并未挂载它，所以桌面会话拿不到 `delivery_*` 工具——这是仍然欠着的接入项，不能写成“已收敛到 DSH 入口”。
+本目录保留既有 DSH 接入记录和本地复核方法。宿主版本与 profile 信息属于历史记录（本轮只重新核验了 profile 组合，未重启 Electron、未改动 `desktop` profile）。
+
+> **平台事实的边界**：下面所有平台描述都是**历史记录**，本轮未重新核实。本地 `origin/main` 与
+> `origin/standards/acceptance` 跟踪引用不是外部认证证明；远端权限、必需检查、CI Evidence 与部署证据
+> **未核实**，不能从工作区文件推定。本地测试通过非完成——只有受保护的验证与晋升路径产出交付结论。
+
+平台侧事实：真实 CI 已把 `baseline/main` 晋升到 BL-001，并保留 4 次 Candidate attempt 与 1 次 Replan；`main` 上的两项必需检查已启用。插件在独立 profile `delivery-verify` 中经 `--dump-config` 实测可组合，但用户正在使用的 `desktop` profile 并未挂载它，所以桌面会话拿不到 `delivery_*` 工具——这是仍然欠着的接入项，不能写成“已收敛到 DSH 入口”。
 
 ## 1. 锁定的运行环境
 

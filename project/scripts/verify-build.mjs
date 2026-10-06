@@ -113,6 +113,12 @@ const pluginTests = [
   { label: 'Deployment identity producer', file: join(repoRoot, 'tools', 'deploy-probe.test.mjs'), requires: 'none' },
   { label: 'Installed checklist paths', file: join(repoRoot, 'tools', 'checklist-path.test.mjs'), requires: 'none' },
   { label: 'CI bootstrap seed graph', file: join(repoRoot, 'tools', 'ci-bootstrap-seed.test.mjs'), requires: 'none' },
+  // These two ran nowhere for a while: both are green, both stage cleanly (they read
+  // only `ci/`, `project/`, `packages/`, `plugins/`, `tools/` and `.github/`, which
+  // ci-stage copies), and both guard a rule nothing else asserts — the promotion
+  // trust target and the staging/provenance wiring of the two workflows.
+  { label: 'CI promotion trust target', file: join(repoRoot, 'tools', 'ci-trust.test.mjs'), requires: 'none' },
+  { label: 'Trusted-CI staging and provenance', file: join(repoRoot, 'tools', 'trusted-ci.test.mjs'), requires: 'none' },
 ]
 const dshHome = process.env.DSH_HOME || join(process.env.USERPROFILE || '', '.dsh')
 const dshPackagesPresent = existsSync(join(dshHome, 'profiles', 'node_modules', '@deepseek-ai', 'dsh-skill'))

@@ -72,8 +72,10 @@ dsh plugin --profile <profile> add github:wangxiaow/dsh-delivery-assured
 - `verify.mjs` 本地只产出诊断。退出码 0 只代表「这次指定的检查在这台机器上通过」。
 - [verify 工作流](.github/workflows/verify.yml)保留观测产物；独立 CI 消费者确认精确来源。当前运行时隔离尚未实现或实证，这些观测不能冒充权威 Evidence。
 - 只有 `promote.yml` 的 Promotion job 持有推进 `refs/heads/baseline/*` 的凭据。
-- 插件暴露的五个工具**全部只读**，不写 Evidence、不晋升、不宣告 `MVP_READY`。
+- 插件暴露的工具**全部只读**，不写 Evidence、不晋升、不宣告 `MVP_READY`。
 - `.agent/STATE.yaml` 的 `DONE` 不是完成证据；Coverage 只从 Contract 与 CI 记录重算。
+- **平台事实不能从工作区推定。** 本地 `origin/main` 与 `origin/standards/acceptance` 跟踪引用不是外部认证证明；
+  远端权限、必需检查、CI Evidence 与**部署证据未核实**时一律按未核实陈述。本地测试通过非完成。
 
 ## 功能特性
 
@@ -213,9 +215,30 @@ node plugins/dsh-delivery-assured/test/compatibility.test.mjs
 node tools/ci-preflight.test.mjs
 node tools/markdown-structure.test.mjs
 node tools/build-gate-absent-plugin.test.mjs
-node tools/local-promotion-drill.mjs
 cd project && node ../packages/delivery-assured/scripts/verify.mjs --local --slice S1
 ```
+
+`node project/scripts/verify-build.mjs` 是构建门：它按路径跑上表中的大部分套件，并额外包含
+`ci-trust`（晋升信任目标）与 `trusted-ci`（staging 与来源 wiring）——这两个此前谁都没跑，
+现在接进门内。
+
+三个套件**刻意留在门外**，因为它们读的文件不在 CI 的 staged 树里（`ci-stage` 只铺
+`packages/ plugins/ tools/ ci/ .github/` 与 `project/`）：
+
+| 套件 | 为什么单独跑 |
+|---|---|
+| `tools/markdown-structure.test.mjs` | 要读仓库根的 `README.md` / `CONTRIBUTING.md` / `LICENSE` |
+| `tools/build-gate-absent-plugin.test.mjs` | 验证「插件缺席时构建门如实报告跳过」，本身会驱动一次门 |
+| `packages/delivery-assured/tests/templates.test.mjs` | 要读仓库根 `README.md` 与 `integrations/`（含本文件的平台事实声明） |
+
+两个套件目前是**红的**，因此不能接进门内——它们断言的是已被刻意废止的收敛规则，需要一轮
+retarget 才能恢复（`tools/local-promotion-drill.mjs` 也属同一类：自 Contract v4 起失效，
+不在任何门内，暂时保留但不要拿它当晋升证据）：
+
+| 套件 | 红在哪 |
+|---|---|
+| `tools/ci-record.test.mjs` | `missing current Critical PASS does not stop a repair Candidate` —— 断言旧的阻塞规则 |
+| `tools/ci-replan.test.mjs` | `real-shaped pass/fail/pass history blocks a newer candidate without a formal Replan` —— Spine 累积重基后该历史**不再**阻塞（`REPAIR_NOTES.md` 已记录这次有意变更） |
 
 | 范围 | 当前声明边界 |
 |---|---|

@@ -64,13 +64,19 @@ try {
   check(run('ci-standards-diff.mjs', ['--repo', canonical, '--old-ref', standardSha, '--new-ref', emptySha]).code === 1, 'Required case deletion fails closed')
   const originalManifest = readFileSync(join(canonical, 'project/tests/acceptance/spec/manifest.yaml'), 'utf8')
   const append = '\n  - id: A-FIXTURE-APPEND\n    obligation_ids: [J-DELIVERY-STATUS]\n    required: true\n    method: automated\n    environments: [production_like_container]\n    assertions: [fixture_result]\n    spec_ref: tests/acceptance/spec/fixture.spec.mjs\n'
-  writeFileSync(manifestPath, originalManifest + append)
+  const appended = originalManifest + append
+  writeFileSync(manifestPath, appended)
   writeFileSync(join(candidate, 'project/tests/acceptance/spec/fixture.spec.mjs'), 'export function declareCases() { return [] }\n')
   git(candidate, ['add', '.'])
   git(candidate, ['commit', '--quiet', '-m', 'pure append'])
   const appendedSha = git(candidate, ['rev-parse', 'HEAD'])
   check(run('ci-standards-diff.mjs', ['--repo', canonical, '--old-ref', standardSha, '--new-ref', appendedSha]).code === 0, 'independent required case append is structurally allowed')
-  writeFileSync(manifestPath, (originalManifest + append).replace('revision: 1', 'revision: 2'))
+  // Bump whatever revision the manifest actually declares. Hard-coding the literal
+  // once made this a silent no-op when the manifest moved on: the fixture then
+  // committed nothing, and the failure surfaced as a confusing git error instead.
+  const bumped = appended.replace(/^revision:(\s*)(\d+)\s*$/m, (_, gap, n) => `revision:${gap}${Number(n) + 1}`)
+  if (bumped === appended) throw new Error('fixture: the acceptance manifest declares no revision line to bump')
+  writeFileSync(manifestPath, bumped)
   git(candidate, ['add', '.'])
   git(candidate, ['commit', '--quiet', '-m', 'manifest metadata rewrite'])
   check(run('ci-standards-diff.mjs', ['--repo', canonical, '--old-ref', standardSha, '--new-ref', git(candidate, ['rev-parse', 'HEAD'])]).code === 1, 'manifest metadata rewrite exits automatic append')
