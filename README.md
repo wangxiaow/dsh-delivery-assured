@@ -96,30 +96,55 @@ dsh plugin --profile <profile> add github:wangxiaow/dsh-delivery-assured
 
 ```text
 .
-├── .github/
-│   ├── workflows/                  # verify.yml / promote.yml（GitHub 实际执行的位置）
-│   └── CODEOWNERS                  # 受保护路径的责任边界
+├── .github/                        # GitHub 实际执行的位置
+│   ├── workflows/                  #   verify.yml / promote.yml / reconcile.yml / record-replan.yml
+│   └── CODEOWNERS                  #   受保护路径的责任边界
 ├── ci/
-│   ├── tools/                      # ci-spec-diff / ci-standards-diff / ci-promote / verify-artifact
-│   └── protection/                 # 分支保护声明与生效步骤
-├── packages/delivery-assured/      # 操作包：可复制到任意项目的交付物
-│   ├── templates/                  #   INTENT.md / ELICITATION.md / CONTRACT.yaml / AGENTS.md
-│   │   └── checklists/             #   web_saas.yaml / cli.yaml / api.yaml
+│   ├── tools/                      #   19 个 CI 工具：stage / record / promote / replan / resolution …
+│   └── protection/                 #   分支保护声明与生效步骤
+├── packages/delivery-assured/      # 操作包：插件自带的运行时依赖，也可独立复制到任意项目
+│   ├── templates/                  #   INTENT.md / ELICITATION.md / CONTRACT.yaml / AGENTS.md / checklists/
 │   ├── scripts/                    #   五个脚本 + lib/ 共享事实计算
-│   └── tests/                      #   YAML 解析器与模板完整性 unit 测试
-├── plugins/dsh-delivery-assured/   # DSH 插件：五个只读工具 + 一个运行期 Skill
-├── integrations/deepseek-harness/  # DSH 接入记录：锁定版本、实测坑、完成标准对照
-├── project/                        # 首个真实项目（本操作包自身）
-│   ├── docs/                       #   INTENT.md / ELICITATION.md
-│   ├── .agent/                     #   CONTRACT.yaml / STATE.yaml / slices/ / project.yaml
-│   ├── tests/acceptance/           #   spec/（受保护）+ driver/（可修改）
+│   └── tests/                      #   unit 与回归套件（由构建门调用）
+├── plugins/dsh-delivery-assured/   # DSH 插件：8 个 delivery_* 工具 + 运行期 Skill + guard + kernel
+│   ├── lib/                        #   桥、工具注册、迭代日志、bootstrap、guard、kernel、Skill
+│   └── test/                       #   套件（含用宿主真实 defineTool 的兼容性契约测试）+ 运行时探针
+├── integrations/deepseek-harness/  # DSH 接入记录：锁定版本、实测坑、项目级 SKILL.md 模板
+├── project/                        # 首个真实项目（本操作包自身）——冻结标准在这里
+│   ├── .agent/                     #   CONTRACT.yaml / project.yaml / slices/ / REPLAN / STATE
+│   ├── ci/verifier.yaml            #   六个门的命令与排除项
+│   ├── tests/acceptance/           #   spec/（受保护）+ driver/（唯一可改的适配面）
 │   ├── tests/spine/                #   回归 Spine 累积清单
 │   ├── scripts/                    #   六个门的实现
+│   ├── docs/                       #   INTENT.md / ELICITATION.md / MVP_FINALIZATION.md
+│   ├── AGENTS.md                   #   项目级工作规则（Global Kernel 的声明来源）
 │   └── src/                        #   delivery CLI
-├── tools/                          # 本地演练与自检
+├── tools/                          # 本地演练与自检：门内套件 + 手工脚本
+├── docs/                           # AUTO_DELIVERY.md + adr/（架构决策）
 ├── package.json                    # 安装单元：name / main / dsh.bundle.patch / files（含操作包）
-└── dsh-bundle.patch.yml            # bundle patch：插入插件行，projectRoot 按会话 workspace 解析
+├── dsh-bundle.patch.yml            # bundle patch：插入插件行，projectRoot 按会话 workspace 解析
+├── CONTEXT.md                      # 领域语言：Contract / Coverage / Evidence / Baseline 等术语
+├── README.md  CONTRIBUTING.md  REPAIR_NOTES.md  LICENSE
+└── .editorconfig  .gitattributes  .gitignore
 ```
+
+这份树里几乎没有「可有可无」的文件——删掉任意一个都会红门或让交付状态失效：
+
+- **`project/**` 是冻结标准。** `.agent/**`、`ci/verifier.yaml`、`tests/acceptance/spec/**`、
+  `tests/spine/**` 的逐字节摘要已冻结，改动任何一个都会让下一次验证以 `STANDARD_DRIFT` 拒绝；
+  `project/scripts/**` 与 `project/tests/harness/**` 由 CI 从 canonical 取用，不经候选。
+- **`packages/**` 与 `plugins/**` 是 shipped product。** `ci-stage` 一律从 canonical 取这两棵树，
+  候选改它们会被直接拒绝；插件与操作包通过根 `package.json` 的 `files` 一起发布到安装包。
+- **`ci/tools/**` 被四个 workflow 直接调用**，`tools/**`、`packages/**/tests/**`、`plugins/**/test/**`
+  被 [`project/scripts/verify-build.mjs`](project/scripts/verify-build.mjs)（构建门）按路径硬编码调用——
+  删一个测试文件就等于红门，而不是「精简」。
+- **运行期产物不入库。** `.agent/evidence/`、`ci/evidence/`、捕获日志与本机验证工作区
+  （`external/`）都由 [.gitignore](.gitignore) 排除，因此 `git status` 只会剩下真实改动。
+
+两份容易被忽略但值得读的文件：[CONTEXT.md](CONTEXT.md) 是这套方法的领域语言（Contract / Coverage /
+Evidence / Baseline / Candidate / Iteration / Attempt / Replan 的精确含义）；
+[`scripts/lib/schema.json`](packages/delivery-assured/scripts/lib/schema.json) 是操作包读写与 CI 写入的
+记录形状（evidence / baseline / mvp-ready / reviews）的权威定义。
 
 ## 快速开始
 

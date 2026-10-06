@@ -48,6 +48,13 @@ probe-*.yaml
 newblock.txt
 statusblock.txt
 
+# 会话探测残留：脚本捕获的 stdout/stderr（`*.log` 之外的同类产物）
+**/.agent/tmp-*
+
+# 本地验证工作区：E2E 项目克隆与探测产物，用来跑真实项目，不是产品内容。
+# 它们带着本机路径，且每个都能重新克隆/重新生成，因此不入库也不再出现在 git status。
+external/
+
 # 编辑器与操作系统
 .vscode/
 .idea/
