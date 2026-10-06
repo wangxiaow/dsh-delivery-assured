@@ -14,7 +14,7 @@
 [![CI](https://github.com/wangxiaow/dsh-delivery-assured/actions/workflows/verify.yml/badge.svg)](https://github.com/wangxiaow/dsh-delivery-assured/actions/workflows/verify.yml)
 [![Implementation](https://img.shields.io/badge/implementation-v0.5-blueviolet.svg)](README.md)
 
-开发状态：默认完成规则已按本次纠偏改为**独立自动验收**（`independent_auto`，见 [ADR-0001](docs/adr/0001-default-independent-auto-delivery.md) 与[自动交付说明](docs/AUTO_DELIVERY.md)）。平台侧已实测：`refs/heads/baseline/main` 由真实 CI 晋升到 **BL-003**（`fd575a5`），7 次 Candidate attempt 与 1 次 Replan 保留在 `delivery-state/main`（`4c40c80f`）；`main` 已启用 `structural checks` + `verify candidate` 两项必需检查（`strict`、`enforce_admins`，禁强推/删除）。**会话侧已实测可用**：独立 profile `delivery-auto`（插件 junction 指向当前工作树）+ 应用自带运行时 0.2.0-rc.2 的真实 headless 会话里，7 个 `delivery_*` 工具全部可见并被真实调用，`delivery_resume`、`delivery_iteration(action=status)` 与 Global Kernel 从同一权威状态得出同一预算（`tools/dsh-session-probe.mjs`；在 `fd575a5` 的干净检出上是 `18 verified, 0 owed`，预算 7/8、Replan 1/2）；权威状态不可读时命令**明确失败**，不会退回工作树读数冒充恢复结果。**尚未完成的部分**：用户在用的 `desktop` profile 未挂载插件，所以**桌面会话当前拿不到 `delivery_*` 工具**；运行时隔离仍未实现，只作为 Baseline 元数据告警记录。另外 `host` 相关套件需要 DSH 侧包才会运行，没有 DSH 包的 CI 环境会跳过它们，所以“CI 绿”不等于这些套件通过。本地测试通过非完成。
+开发状态：默认完成规则已按本次纠偏改为**独立自动验收**（`independent_auto`，见 [ADR-0001](docs/adr/0001-default-independent-auto-delivery.md) 与[自动交付说明](docs/AUTO_DELIVERY.md)）。平台侧已实测：`refs/heads/baseline/main` 由真实 CI 晋升到 **BL-003**（`fd575a5`），7 次 Candidate attempt 与 1 次 Replan 保留在 `delivery-state/main`（`4c40c80f`）；`main` 已启用 `structural checks` + `verify candidate` 两项必需检查（`strict`、`enforce_admins`，禁强推/删除）。**插件已可直接按仓库 URL 安装**：在 DSH 里把 `https://github.com/wangxiaow/dsh-delivery-assured` 加为插件，即装即启用——不需要 junction、`--patch`、手工 `packRoot`/`projectRoot`，也不需要本机存在这份仓库的工作树（安装包自带操作包）。在干净 profile（`dsh-base` + `dsh-headless`，无任何本地链接）里用应用自带运行时 0.2.0-rc.2 的真实 headless 会话实测：Skill 自动加载、7 个 `delivery_*` 工具注册并被真实调用；`delivery_resume` 把**会话自身的 workspace** 当作当前项目并报出 `bootstrap 1/5`，`delivery_iteration action=open` 把需求原文落进该 workspace 的 `.agent/ITERATIONS.jsonl`；`delivery_resume`、`delivery_iteration(action=status)` 与 Global Kernel 从同一权威状态得出同一预算（`tools/dsh-session-probe.mjs`；在 `fd575a5` 的干净检出上是 `18 verified, 0 owed`，预算 7/8、Replan 1/2），权威状态不可读时命令**明确失败**，不会退回工作树读数冒充恢复结果。**仍未完成、需如实说明的部分**：`main` 尖端自带的 `packages/delivery-assured/tests/host-verification.test.mjs:584` 假设 `DSH_CI_ISSUER` 未设置，而 `verify.yml` 把它导出到整个 job，于是任何候选的 `verify candidate` 都会失败（本机带同一组环境变量可复现），本仓库因此目前无法通过 PR 落地改动；用户在用的 `desktop` profile 未挂载插件；运行时隔离仍未实现，只作为 Baseline 元数据告警记录。另外 `host` 相关套件需要 DSH 侧包才会运行，没有 DSH 包的 CI 环境会跳过它们，所以“CI 绿”不等于这些套件通过。本地测试通过非完成。
 
 </div>
 
@@ -94,7 +94,9 @@
 │   ├── tests/spine/                #   回归 Spine 累积清单
 │   ├── scripts/                    #   六个门的实现
 │   └── src/                        #   delivery CLI
-└── tools/                          # 本地演练与自检
+├── tools/                          # 本地演练与自检
+├── package.json                    # 安装单元：name / main / dsh.bundle.patch / files（含操作包）
+└── dsh-bundle.patch.yml            # bundle patch：插入插件行，projectRoot 按会话 workspace 解析
 ```
 
 ## 快速开始
@@ -128,14 +130,30 @@ node src/cli.mjs status
 
 ### 安装 DSH 插件
 
+在 DSH 里走 **添加插件 → 输入仓库地址 → 安装 → 启用**，一步完成：
+
+```text
+https://github.com/wangxiaow/dsh-delivery-assured
+```
+
+安装单元就是本仓库根：`package.json` 声明 `name` 与 `dsh.bundle.patch`，`files` 把插件和
+`packages/delivery-assured` 一起打进安装包，所以**装完自带操作包**，不依赖本机存在这份仓库的
+工作树、junction 或 `--patch` 覆盖。安装后插件默认启用（`dsh.profile.bundles` 自动多出一行），
+项目根取**会话自身的 workspace**（bundle patch 里的 `projectRoot: '.'` 每次调用按会话 cwd 解析），
+所以打开任意普通项目直接说需求即可；想固定到某个项目或换 pack 时，在 profile 自己的
+`cordis.patch.yml` 里按 id 覆盖那一行即可。
+
+只有在本机开发插件时才会用到仓库内路径：
+
 ```bash
 cd "$DSH_HOME/profiles/<profile>"
 pnpm add "link:<repo>/plugins/dsh-delivery-assured"
 # 并把 "dsh-delivery-assured" 加进该 profile package.json 的 dsh.profile.bundles
 ```
 
-配置项（也可用环境变量）：`packRoot`（`DSH_DELIVERY_PACK`）、
-`projectRoot`（`DSH_DELIVERY_PROJECT`）、`nodeBin`（`DSH_DELIVERY_NODE`）。
+这条路径下配置项（也可用环境变量）：`packRoot`（`DSH_DELIVERY_PACK`）、
+`projectRoot`（`DSH_DELIVERY_PROJECT`）、`nodeBin`（`DSH_DELIVERY_NODE`）；它们覆盖 bundle
+自带的那一行。
 
 **兼容性**：插件面向 **DSH desktop `0.2.0-rc.2`**，peer 依赖
 `@deepseek-ai/dsh-tools` `^0.2.0-rc.2`。预发布版本之间不互相满足，所以只写版本线、
@@ -207,7 +225,7 @@ secrets 是否存在。那些只有真实推送才能验证。
 
 ## 接进你自己的项目
 
-1. 复制 `packages/delivery-assured/` 到你的工具位置，或在 DSH profile 里 `link:` 它。
+1. 在 DSH 里从本仓库 URL 安装插件，装完自带 `packages/delivery-assured`（离线或二次开发时才改为复制 `packages/delivery-assured/` 到你的工具位置）。
 2. 用模板写出 `docs/INTENT.md`、`docs/ELICITATION.md`、`.agent/CONTRACT.yaml`。
 3. 写 `.agent/project.yaml`：路径、尝试预算、baseline 引用、trusted issuer。
 4. 写 `ci/verifier.yaml`：六个门的命令，以及**在 Contract 中有理由的**排除项。

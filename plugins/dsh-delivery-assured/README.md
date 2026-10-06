@@ -60,6 +60,22 @@
 
 ## 安装
 
+**正常路径：按仓库 URL 安装，一条命令都不用在终端里敲。** 在 DSH 里
+**添加插件 → 输入仓库地址 → 安装 → 启用**：
+
+```text
+https://github.com/wangxiaow/dsh-delivery-assured
+```
+
+仓库根的 `package.json` 是这个安装单元（`dsh.bundle.patch` → `dsh-bundle.patch.yml`），
+`files` 把插件与 `../packages/delivery-assured` 一起打进安装包，所以装完自带操作包；
+`dsh.profile.bundles` 由插件管理器自动加上这一行（即“启用”），
+项目根由 bundle patch 的 `projectRoot: '.'` 按**会话自身的 workspace** 每次调用解析。
+不需要 junction、`--patch`、手工 `packRoot`/`projectRoot`，也不需要本机存在这份仓库的工作树。
+
+下面的 `install.mjs` 只服务**本机开发 / 离线**场景（从本地工作树链入、写 profile 的
+`cordis.patch.yml`、跑自检），正常使用不需要它。
+
 > **安全策略（因为犯过一次错）**：安装器**不会**修改正在运行的 `desktop` profile——那个 manifest 归应用的插件管理器所有，它会在运行时重写，而一行它加载不了的插件配置会直接打挂当前会话。对 `desktop` 默认只打印步骤并**一行不写**；只有应用**完全关闭**时显式加 `--enable-desktop` 才写入。`--profile-dir` 指向的临时 profile（试装）不受此限制。
 
 ```powershell
@@ -73,7 +89,7 @@ node <repo>/plugins/dsh-delivery-assured/install.mjs --project <你的业务仓�
 它会：把 `link:` 依赖写进 profile、在 profile 自己的 `cordis.patch.yml` 写入插件行与 `packRoot`/`projectRoot` 配置（`dsh.profile.bundles` **不动**，那个字段归应用的插件管理器）、保留 `package.json.delivery-backup`，然后跑一遍插件 smoke 与 v0.3 §4.3 探针，并对你指定的项目跑一次 `resume` 打印摘要。
 装完必须**重启应用**才生效；不要在应用运行时改这些文件。
 
-手工步骤（与上面等价，供核对或受限环境使用）：
+手工步骤（与上面等价，只用于本机开发；供核对或受限环境使用）：
 
 ```powershell
 # 1. 让 profile 能看到插件，然后链进去
@@ -93,6 +109,9 @@ pnpm add "link:<repo>/plugins/dsh-delivery-assured"
 ```
 
 ## 配置
+
+按仓库 URL 安装时这些键**都不需要填**（`packRoot` 由安装包内的同级目录解析，
+`projectRoot` 由 bundle patch 取会话 workspace）。本机开发路径或要固定项目时才用：
 
 | 键 | 环境变量回退 | 含义 |
 |---|---|---|
