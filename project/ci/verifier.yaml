@@ -3,9 +3,11 @@
 # 每个 gate 的 `command` 在本仓库根目录执行；空执行或退出码 0 都不算通过，
 # 只有真实命令的成功结果才算。`excluded: true` 必须写明理由，否则 verify 报阻塞。
 #
-# 环境变量由 CI 注入：DSH_CI_ISSUER、DSH_CI_RUN_ID、DSH_IMAGE_DIGEST、
-# DSH_CONFIG_FINGERPRINT、DSH_FIXTURE_REVISION、DSH_PROTECTED_ACCEPTANCE_DIR。
-
+# 环境变量：验证进程不再把整个进程环境复制给 gate。每个 gate 只拿到最小平台基础
+# 环境（PATH/HOME/TEMP/SystemRoot/…）加上这里 `env` 显式声明的变量。写成 `$NAME`
+# 的值表示"转发验证进程自己的同名变量"，因此"gate 能看到哪些环境变量"是冻结标准
+# 的一部分，Candidate 无法扩大。DSH_CI_ISSUER 之类的 authority 变量故意不在此声明，
+# 它们只属于验证进程本身，不进入任何 gate。
 revision: 1
 
 acceptance:
@@ -17,6 +19,13 @@ gates:
   - gate: build
     command: "node scripts/verify-build.mjs"
     timeout_ms: 300000
+    # 构建门会运行插件套件，插件需要定位宿主运行时（`$DSH_HOME/profiles/node_modules`，
+    # 或显式 pin）。这三个都是**运行时位置**输入，不携带任何判定权威；显式声明出来，
+    # 而不是让 gate 继承整个进程环境。
+    env:
+      DSH_HOME: "$DSH_HOME"
+      DSH_PROFILE_DIR: "$DSH_PROFILE_DIR"
+      DSH_DELIVERY_DSH_TOOLS_DIR: "$DSH_DELIVERY_DSH_TOOLS_DIR"
 
   - gate: clean_boot
     # 干净状态启动：缺少必要文件必须明确失败，而不是静默成功。
@@ -38,6 +47,10 @@ gates:
     # Spine 为空时执行完整必需集合，等价于全量重验的起点。
     command: "node scripts/verify-spine.mjs"
     timeout_ms: 600000
+    # 父 Baseline 的 Spine 文件路径（由验证 job 产出时提供）。显式转发，否则
+    # verify-spine 只能降级为"未能比较父 Spine"的说明。
+    env:
+      DSH_PARENT_SPINE: "$DSH_PARENT_SPINE"
 
   - gate: deployment
     # 部署观测由 ci/tools/ci-deploy-probe.mjs 生产：把打包产物装进干净目录并实际运行，
@@ -47,3 +60,11 @@ gates:
     command: "node scripts/verify-deployment.mjs"
     local: skip
     timeout_ms: 300000
+    # 显式转发的部署身份输入：由装配/安装步骤产出，验证进程只是搬运。
+    env:
+      DSH_DEPLOYMENT_ID: "$DSH_DEPLOYMENT_ID"
+      DSH_DEPLOYED_CODE_REVISION: "$DSH_DEPLOYED_CODE_REVISION"
+      DSH_DEPLOYED_IMAGE_DIGEST: "$DSH_DEPLOYED_IMAGE_DIGEST"
+      DSH_IMAGE_DIGEST: "$DSH_IMAGE_DIGEST"
+      DSH_DEPLOYMENT_MODE: "$DSH_DEPLOYMENT_MODE"
+      DSH_DEPLOYMENT_HEALTH_URL: "$DSH_DEPLOYMENT_HEALTH_URL"

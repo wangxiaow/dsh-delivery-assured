@@ -153,6 +153,16 @@ export function validateHostEvidenceRecord(record) {
       if (HOST_REQUIRED_EXECUTED_GATES.includes(gate)) {
         need(g.outcome === 'passed' && g.exit_code === 0, `gate ${gate} must really execute on the host backend; it recorded ${g.outcome}`)
       }
+      if (gate === 'deployment') {
+        // The host backend executes the candidate in place: there is no installed
+        // artifact anywhere for it to observe. A record that reports an observed
+        // deployment contradicts its own `environment.observed.deployment === false`,
+        // so it is refused rather than counted as a capability (see lib/capability.mjs).
+        need(
+          g.outcome !== 'passed',
+          'a host-executed run cannot observe a packaged deployment; the deployment gate must be an explicit ci_only exclusion',
+        )
+      }
       if (host.gate_exit_codes && own(host.gate_exit_codes, gate)) {
         need(host.gate_exit_codes[gate] === g.exit_code, `gate ${gate} exit code differs from the retained execution record`)
       }

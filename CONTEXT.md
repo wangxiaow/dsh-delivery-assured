@@ -26,6 +26,12 @@
 
 **Frozen Standard**：冻结时刻受保护标准文件（Contract、项目配置、验收 manifest 与 spec、verifier 配置、Slice）的逐字节摘要，加上这些字节所属的提交 revision。Host-Executed Verification 用它代替受保护 `standards/acceptance` ref：冻结后任何改动都会让验证以 `STANDARD_DRIFT` 拒绝。
 
-**Delivered**：由证据算出的终态，不是声明。它成立的条件是：本项目的验证后端在**当前精确候选**上实际执行了冻结 Required 集合与累积 Spine 且全部通过，没有 Critical 欠账，预算未耗尽。Baseline 晋升不是它的前提。
+**Delivered**：由证据算出的终态，不是声明。它成立的条件是：本项目的验证后端在**当前精确候选**上实际执行了冻结 Required 集合与累积 Spine 且全部通过，**该后端真的有能力观测到 Contract 要求的每一类事实**，没有 Critical 欠账，预算未耗尽，且决定该判定的核心逻辑（Frozen TCB）在本轮未被改动。Baseline 晋升不是它的前提。
+
+**Required Observable**：Contract 要求"必须被实际观测到"的事实（build、clean boot、持久化迁移、Slice 验收、累积 Spine、打包部署…）。对 Required Observable 而言 `not_observed`/`unsupported`/`warning` 永远不是通过；只有"观测到且通过"才算。
+
+**Backend Capability**：某个验证后端真的能观测到的事实集合。`Delivered` 要求 Required Observable 是该集合的子集，否则 `BACKEND_CAPABILITY_INSUFFICIENT`。未被要求的事实观测不到不阻塞。
+
+**Frozen TCB**：决定"是否 Delivered"的有限文件集合（Contract 解析、Required 推导、证据校验、Delivered 判定、冻结校验、Spine 完整性、backend 能力、verifier 启动器）。冻结时记摘要，验证时重算；普通 Candidate 不得在本轮修改它，verifier 升级属于 control-plane 流程。
 
 **Human Review**：由用户主动选择、需要真实人类评审记录的完成模式。自动验收不能冒充这种记录。

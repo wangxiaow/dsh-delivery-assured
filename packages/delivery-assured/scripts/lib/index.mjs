@@ -80,5 +80,29 @@ export {
   resolveVerification,
 } from './verification.mjs'
 export { createFreeze, currentFileDigests, freezeFiles, freezePath, readFreeze, verifyFreeze } from './standard-freeze.mjs'
+export {
+  BACKEND_CAPABILITY_INSUFFICIENT,
+  BACKEND_OBSERVABLE_CAPABILITIES,
+  OBSERVABLE,
+  OBSERVABLE_VALUES,
+  assessBackendCapability,
+  assessPlannedCapability,
+  capabilityMessage,
+  contractRequiresDeploymentObservation,
+  observedCapabilities,
+  requiredObservables,
+} from './capability.mjs'
+export { SAFE_BASE_ENV_KEYS, RUNNER_SIGNAL_KEYS, buildBaseEnv, fixtureEnv, gateEnv, isInheritedByDefault, runnerSignals } from './env.mjs'
+export {
+  TCB_FILES,
+  TCB_VERSION,
+  currentTcbDigests,
+  tcbChangeAuthorization,
+  tcbDigest,
+  tcbFiles,
+  tcbRecord,
+  tcbRepoRoot,
+  verifyTcb,
+} from './tcb.mjs'
 export { STATE_REF, STATE_SCOPES, STATE_TRANSPORT, fetchDurableState, inStateScope, readRemoteRef, resolveStateRepo } from './durable-state.mjs'
 export { STATE_AUTHORITY, STATE_SOURCE, budgetSignature, openStateView, stateAuthority } from './state-view.mjs'

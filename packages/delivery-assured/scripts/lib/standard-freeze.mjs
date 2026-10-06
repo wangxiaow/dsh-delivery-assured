@@ -27,6 +27,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { abs, fileDigest, git, listFiles, readJson, readYaml, sha256, rel } from './common.mjs'
 import { DEFAULT_FREEZE_PATH } from './verification.mjs'
+import { TCB_VERSION, currentTcbDigests, tcbChangeAuthorization, tcbDigest, tcbRepoRoot, verifyTcb } from './tcb.mjs'
 
 export const FREEZE_SCHEMA = 1
 
@@ -85,13 +86,21 @@ function standardIdOf(files) {
  * `allowStandardChange` is the explicit, auditable escape: without it an existing
  * record is never overwritten (a verification would otherwise be able to re-freeze
  * the very standard it is judging).
+ *
+ * The verifier's Trusted Computing Base is recorded alongside the standard, but it is
+ * *not* a standard file a Candidate may change in the same round: re-freezing a changed
+ * TCB needs `allowTcbChange`, which the agent-facing surface never passes. That flag is
+ * an auditability control, not a security boundary — the session has a shell — so the
+ * real boundaries stay outside this process (see docs/TCB.md and lib/tcb.mjs).
  */
-export function createFreeze(root, cfg, resolved, { at = new Date().toISOString(), allowStandardChange = false, reason = null } = {}) {
+export function createFreeze(root, cfg, resolved, { at = new Date().toISOString(), allowStandardChange = false, reason = null, allowTcbChange = false, tcbRoot = tcbRepoRoot() } = {}) {
   const path = freezePath(root, resolved)
   const files = currentFileDigests(root, cfg)
   if (Object.keys(files).length === 0) {
     return { ok: false, problems: [`no protected standard file was found under ${root}; there is nothing to freeze`] }
   }
+  const tcbFilesNow = currentTcbDigests(tcbRoot)
+  const tcb = { tcb_version: TCB_VERSION, tcb_files: tcbFilesNow, tcb_digest: tcbDigest(tcbFilesNow) }
   const existing = readJson(path, { required: false })
   if (existing && !allowStandardChange) {
     return {
@@ -102,6 +111,13 @@ export function createFreeze(root, cfg, resolved, { at = new Date().toISOString(
       ],
       existing,
     }
+  }
+  // A changed TCB is not a standard change a Candidate may perform on itself. It is
+  // refused here rather than silently recorded, so "the verifier was upgraded" is
+  // always an explicit control-plane act with its own review (docs/TCB.md).
+  const authorization = tcbChangeAuthorization(existing, tcb, { allowTcbChange })
+  if (!authorization.ok) {
+    return { ok: false, problems: [authorization.problem], existing, tcb }
   }
   const revision = git(root, ['rev-parse', 'HEAD']).ok ? git(root, ['rev-parse', 'HEAD']).out : null
   const manifestPath = abs(root, cfg.paths.acceptanceManifest)
@@ -114,17 +130,26 @@ export function createFreeze(root, cfg, resolved, { at = new Date().toISOString(
     frozen_revision: revision,
     manifest_revision: manifest?.revision ?? null,
     files,
+    ...tcb,
     previous_standard_id: existing?.standard_id ?? null,
+    previous_tcb_digest: existing?.tcb_digest ?? null,
     history: [
       ...(Array.isArray(existing?.history) ? existing.history : []),
       ...(existing
-        ? [{ at, from_standard_id: existing.standard_id, to_standard_id: standardId, reason: reason || '(no reason recorded)' }]
+        ? [{
+            at,
+            from_standard_id: existing.standard_id,
+            to_standard_id: standardId,
+            from_tcb_digest: existing.tcb_digest ?? null,
+            to_tcb_digest: tcb.tcb_digest,
+            reason: reason || '(no reason recorded)',
+          }]
         : []),
     ],
   }
   mkdirSync(dirname(path), { recursive: true })
   writeFileSync(path, `${JSON.stringify(record, null, 2)}\n`, 'utf8')
-  return { ok: true, record, path, changed: Boolean(existing) }
+  return { ok: true, record, path, changed: Boolean(existing), tcb }
 }
 
 /**
@@ -136,7 +161,7 @@ export function createFreeze(root, cfg, resolved, { at = new Date().toISOString(
  * compare against, which the evidence validator reports as a limitation rather than
  * as proof.
  */
-export function verifyFreeze(root, cfg, resolved, { requireRecord = true } = {}) {
+export function verifyFreeze(root, cfg, resolved, { requireRecord = true, tcbRoot = tcbRepoRoot() } = {}) {
   const path = freezePath(root, resolved)
   const record = readJson(path, { required: false })
   const problems = []
@@ -153,6 +178,7 @@ export function verifyFreeze(root, cfg, resolved, { requireRecord = true } = {})
       ],
       record: null,
       committed_verified: null,
+      tcb: null,
     }
   }
   if (record.schema !== FREEZE_SCHEMA) {
@@ -182,6 +208,13 @@ export function verifyFreeze(root, cfg, resolved, { requireRecord = true } = {})
   if (record.standard_id !== standardIdOf(recorded)) {
     problems.push({ code: 'FREEZE_TAMPERED', message: 'the freeze record does not match its own standard id' })
   }
+
+  // The verifier Trusted Computing Base is re-checked here, before a single gate runs.
+  // A Candidate that edited the logic which decides its own verdict cannot verify
+  // itself with it, and rewriting the recorded digest does not help when the TCB lives
+  // inside this repository: the comparison is against Git blobs at the frozen revision.
+  const tcb = verifyTcb(record, { root: tcbRoot, projectRoot: root, frozenRevision: record.frozen_revision })
+  for (const problem of tcb.problems) problems.push(problem)
 
   // Committed-bytes cross-check. Git blob ids are computed over the bytes in the
   // object database, so no checkout/line-ending filter can make an edited file look
@@ -222,5 +255,5 @@ export function verifyFreeze(root, cfg, resolved, { requireRecord = true } = {})
       }
     }
   }
-  return { ok: problems.length === 0, problems, record, drift, committed_verified: committedVerified }
+  return { ok: problems.length === 0, problems, record, drift, committed_verified: committedVerified, tcb }
 }

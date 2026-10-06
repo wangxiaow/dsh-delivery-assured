@@ -34,6 +34,15 @@ const { loadModel } = await import(pathToFileURL(join(packRoot, 'scripts', 'lib'
 const { computeConvergence } = await import(pathToFileURL(join(packRoot, 'scripts', 'lib', 'convergence.mjs')).href)
 const { loadProjectConfig, loadEvidence } = await import(pathToFileURL(join(packRoot, 'scripts', 'lib', 'common.mjs')).href)
 const { validateHostEvidenceRecord } = await import(pathToFileURL(join(packRoot, 'scripts', 'lib', 'evidence.mjs')).href)
+const { buildBaseEnv } = await import(pathToFileURL(join(packRoot, 'scripts', 'lib', 'env.mjs')).href)
+
+/**
+ * Every subprocess this suite starts runs with an explicitly constructed
+ * environment: the minimal platform base plus what the scenario declares. Inheriting
+ * `process.env` made the meaning of a Host-backend test depend on whether it ran
+ * inside a CI job that exports `DSH_CI_ISSUER` and the deployment identity.
+ */
+const SAFE_ENV = buildBaseEnv()
 
 const SPEC_ONE = `
 export const id = 'A-HELLO-001'
@@ -235,7 +244,7 @@ function git(root, args) {
 
 function run(argv, cwd, env = {}) {
   try {
-    const stdout = execFileSync(process.execPath, argv, { cwd, encoding: 'utf8', env: { ...process.env, ...env } })
+    const stdout = execFileSync(process.execPath, argv, { cwd, encoding: 'utf8', env: { ...SAFE_ENV, ...env } })
     return { status: 0, stdout, stderr: '' }
   } catch (error) {
     return { status: error.status ?? 1, stdout: String(error.stdout || ''), stderr: String(error.stderr || '') }

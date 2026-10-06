@@ -57,6 +57,46 @@ run 同样会消耗那个冻结候选。这条通路只在选择了可信 CI 后
 但只是高保障选项，不是普通项目完成的前提。声明的后端不允许被更弱的后端替代：声明
 `trusted_ci` 的项目调用宿主后端会被直接拒绝（退出码 2）。
 
+### backend 必须真的能观测到 Contract 要求的事实
+
+"这个后端看不到某件事"本身不是缺陷；**看不到却仍然给出 `Delivered = true`** 才是。判定由两个显式集合推导：
+
+```text
+required_observables              这个 Contract 要求被实际观测到的事实
+backend_observable_capabilities   产出这条记录的后端真的有能力观测的事实
+```
+
+`Delivered` 要求 `required_observables ⊆ backend_observable_capabilities`，并且每个 Required observable
+背后都有一条本轮有效记录。缺一则 `NOT_DELIVERED`，理由码是稳定的 `BACKEND_CAPABILITY_INSUFFICIENT`，
+结果里至少带 `backend` 与 `missing_observables`。对 Required observable 而言，
+`not_observed` / `unsupported` / `unknown` / `warning` **永远不算通过**。
+
+| observable | 由谁观测 |
+|---|---|
+| `build`、`clean_boot`、`persistence_migration`、`slice_acceptance`、`regression_spine` | 两个后端都能（冻结 verifier 声明了对应门即成为 required） |
+| `production_deployment` | 只有 `trusted_ci`（记录必须真的绑定 `deployment_id`/`deployed_code_revision`/`image_digest`） |
+| `runtime_isolation`、`container_isolation`、`external_provider` | 目前**两个后端都不能**：Contract 一旦要求，任何后端都必须 BLOCKED |
+
+required 集合来自 Contract 与冻结 verifier 声明的门，**不来自后端**：Contract 只要 build/boot/acceptance/regression
+的项目，宿主后端照常可以 Delivered。`production_deployment` 也不会因为环境名字（`staging`、
+`production_like_container`）而自动成为 required——那是**显式声明**的：
+
+```yaml
+deployment:
+  required_observables: [production_deployment]     # 显式要求"部署被实际观测"
+  release_prerequisites:                            # 声明了 trusted_ci 后端时，平台可观测前提也算
+    - { id: verify-required-checks, verification: required_check_runs_on_candidate, expects: [...] }
+```
+
+为什么要显式：即便冻结 verifier 里有一个 `deployment` 门，那也只是"验证器跑什么"的陈述，不是"必须观测到部署"
+的陈述；而只按环境名字推导会让[出厂 Contract 模板](packages/delivery-assured/templates/CONTRACT.yaml)
+派生的每个项目都被迫改用 CI 后端，与模板自己写的"只有声明 `verification.backend: trusted_ci` 才要求平台观测"
+直接冲突。反过来，一旦 Contract 显式要求，宿主后端会在**任何门执行之前**以退出码 2 拒绝整次运行
+（不消耗 attempt、不留下记录），必须换 `trusted_ci`。未被要求（optional）的 observable 缺失不阻塞。
+
+判定一处计算、多处使用：[backend-capability](packages/delivery-assured/tests/backend-capability.test.mjs)
+套件覆盖 required/optional/`not_observed`/backend 能力不足四种情形。
+
 ## 自动验收为什么不是“自称完成”
 
 - 验收 case 在受保护目录里，实现者不能改；宿主运行前先按冻结记录的逐字节摘要校验标准，
@@ -68,6 +108,23 @@ run 同样会消耗那个冻结候选。这条通路只在选择了可信 CI 后
 - host 记录必须携带本次执行的 run token、保留日志摘要、harness 结果文件摘要与逐门退出码，
   并与 receipt 互相指认；没有这些字段的手写文件不是证据。
 - host 记录必须**明确声明它没有观测到**打包部署与运行时隔离；这些限制进入交付报告，而不是被折叠成 PASS。
+  这些"限制"只有在 Contract **没有**要求该事实时才是限制；一旦 required，见上面的 backend capability 规则。
+- **任何 Agent-facing 开关都不能关闭 Spine 累积**。`delivery_verify_independent` 只声明
+  `slice`/`freeze_standard`/`allow_standard_change`/`standard_change_reason`/`parent_baseline`/`hypothesis`
+  六个输入，没有"这次不算数"的开关；底层 CLI 的 `--no-spine-accumulate` 已删除，传入即 `unknown option`（退出码 2）。
+  PASS 之后的累积是 `new_spine = old_spine ∪ verified_cases`：一个已累积的 case 没通过就阻塞整次运行，
+  而"该进的 case 没进 Spine"是 **verifier error**（`SPINE_NOT_ACCUMULATED`），不是 warning。
+- **验证子进程的环境是显式构造的，不继承宿主进程**。gate 只拿到最小平台基础环境
+  （PATH/HOME/TEMP/SystemRoot/…）加上**冻结 verifier 配置里逐个声明的变量**；写成 `$NAME` 的值才转发
+  验证进程自己的同名变量。`DSH_CI_ISSUER`、`DSH_IMAGE_DIGEST`、`DSH_STANDARD_REVISION` 等 authority
+  变量因此不会从 CI job 意外流入宿主验证或测试 fixture，"哪些环境变量能进 gate"是冻结标准的一部分。
+- **决定 Delivered 的逻辑是一个有限的 Frozen TCB**：冻结时记录 `tcb_version`/`tcb_files`/`tcb_digest`，
+  验证时在任何门之前重算；漂移即 `TCB_DRIFT` → `NOT_DELIVERED`。TCB 在候选仓库内时另有一条
+  **frozen revision 的 Git blob id** 比对，所以"改 verifier、只把摘要文件一起改掉"不成立。
+  它挡不住的是**同时**改写 `frozen_revision`（等于冒充控制平面）：那不是普通交付行为的封堵点，
+  在 CI 后端由 `ci-stage` 从 canonical 取包 + 受保护引用挡住；升级 verifier 属于 control-plane 流程，
+  普通 Candidate 的 tool schema 上没有授权开关。这两条残余在 [Frozen TCB](TCB.md) 与
+  [frozen-tcb 回归](packages/delivery-assured/tests/frozen-tcb.test.mjs) 里被显式固定，不当作已解决。
 - 候选工作树必须与它绑定的提交 revision 一致，否则拒绝。**会话本来就会写的状态文件不算候选改动**：
   `.agent/ITERATIONS.jsonl`、`.agent/STATE.yaml`、attempt 账本、累积 Spine、`.agent/reviews.yaml`、
   `.agent/STANDARD_CHANGES.yaml`、`ci/mvp-ready.json`、Evidence 目录与冻结锚点；这份清单写进记录的
@@ -155,6 +212,6 @@ run 同样会消耗那个冻结候选。这条通路只在选择了可信 CI 后
 | 工具 | 作用 | 边界 |
 |---|---|---|
 | `delivery_iteration` | 追加式迭代日志：记录需求、决策、观测到的证据引用、阻塞、结束 | `close` 必须由重算出的 Delivered 判定放行，否则拒绝且不写；不是完成凭证 |
-| `delivery_verify_independent` | **默认完成路径**：宿主实际执行冻结验收并写入 Evidence、运行日志与 receipt | 不能选 Required 集合、不能跳过、不能写 PASS；失败只报告门与 case |
+| `delivery_verify_independent` | **默认完成路径**：宿主实际执行冻结验收并写入 Evidence、运行日志与 receipt | 不能选 Required 集合、不能跳过、不能关闭 Spine 累积、不能改 TCB、不能写 PASS；失败只报告门与 case |
 | `delivery_ci` | 按白名单输入派发 `verify` / `promote`，读取精确运行与 job（可选高保障后端） | 无 Baseline 凭据；歧义派发不重试 |
 | `delivery_gaps` / `delivery_coverage` / `delivery_resume` / `delivery_attempts` / `delivery_verify_local` | 结构检查、覆盖重算、恢复摘要、预算、本地六门诊断 | 只读；本地一律 `local_diagnostic` |

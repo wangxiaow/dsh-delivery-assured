@@ -39,6 +39,7 @@ import {
   standardBindings,
 } from './lib/common.mjs'
 import { loadModel, scanDriverForAssertions, specDiffAgainstProtected } from './lib/model.mjs'
+import { gateEnv } from './lib/env.mjs'
 import {
   EVIDENCE_GATES,
   HOST_ENVIRONMENT_KIND,
@@ -51,6 +52,8 @@ import { attemptFromCI } from './lib/convergence.mjs'
 import { assessMvpReady } from './lib/mvp.mjs'
 import { VERIFICATION_BACKEND, resolveVerification } from './lib/verification.mjs'
 import { createFreeze, freezePath, verifyFreeze } from './lib/standard-freeze.mjs'
+import { assessBackendCapability, assessPlannedCapability, capabilityMessage, requiredObservables } from './lib/capability.mjs'
+import { TCB_VERSION, currentTcbDigests, tcbDigest } from './lib/tcb.mjs'
 
 const GATES = EVIDENCE_GATES
 const GATE_ALIASES = { migration: 'persistence_migration', persistence: 'persistence_migration', acceptance: 'slice_acceptance', spine: 'regression_spine' }
@@ -75,10 +78,13 @@ function main() {
     'freeze-standard': 'boolean',
     'allow-standard-change': 'boolean',
     'standard-change-reason': 'value',
+    // Control-plane only, and deliberately absent from every agent-facing tool schema:
+    // promoting a new verifier means promoting a new Trusted Computing Base, which is a
+    // separate maintenance flow rather than a Candidate action (docs/TCB.md).
+    'allow-tcb-change': 'boolean',
     'run-id': 'value',
     'log-dir': 'value',
     hypothesis: 'value',
-    'no-spine-accumulate': 'boolean',
     'mvp-ready': 'boolean',
     'release-receipt': 'value',
     'out-dir': 'value',
@@ -109,16 +115,20 @@ function main() {
   if (opts['freeze-standard']) {
     const created = createFreeze(root, cfg, verification, {
       allowStandardChange: opts['allow-standard-change'] === true,
+      allowTcbChange: opts['allow-tcb-change'] === true,
       reason: opts['standard-change-reason'] || null,
     })
     if (!created.ok) {
-      for (const problem of created.problems) process.stderr.write(`verify: ${problem}\n`)
+      for (const problem of created.problems) {
+        process.stderr.write(`verify: ${typeof problem === 'string' ? problem : `${problem.code}: ${problem.message}`}\n`)
+      }
       return EXIT.FAIL
     }
     noteStdout(
       opts,
       `frozen standard ${created.record.standard_id} at ${rel(root, created.path)} ` +
         `(${Object.keys(created.record.files).length} protected file(s), revision ${created.record.frozen_revision || '(not a git repository)'})` +
+        `; verifier TCB v${created.record.tcb_version} ${created.record.tcb_digest.slice(0, 12)} (${Object.keys(created.record.tcb_files).length} file(s))` +
         `${created.changed ? '; the previous standard is retained in the record history' : ''}\n`,
     )
     return EXIT.PASS
@@ -155,6 +165,24 @@ function main() {
   if (opts['write-evidence'] && !hostMode && !process.env.DSH_CI_ISSUER) throw new InputError('--write-evidence requires DSH_CI_ISSUER to name the trusted verification job')
   if (hostMode && opts['mvp-ready']) throw new InputError('--mvp-ready is the trusted-CI MVP entry; the host backend completes without it')
 
+  // Backend capability completeness, checked *before* any gate runs.
+  //
+  // Selecting a backend that structurally cannot observe a fact the Contract requires is
+  // an input error, not a run that fails later: the alternative is a full run, a burned
+  // attempt and — worse — a record that a later reader could mistake for coverage of
+  // something nobody looked at. `not_observed` never counts as a pass for a Required
+  // observable (see lib/capability.mjs).
+  if (backend) {
+    const planned = assessPlannedCapability(model, { backend, gates: verifier.gates })
+    if (!planned.ok) {
+      throw new InputError(
+        `${capabilityMessage(planned)}; the frozen Contract requires those observations and this backend cannot make ` +
+          'them — verify with a backend that can (for a deployment observation, the trusted CI backend) or record an ' +
+          'explicitly approved Contract that does not require them',
+      )
+    }
+  }
+
   // The frozen standard is checked before a single gate runs: a host record that
   // executed a modified acceptance would be evidence of something nobody froze.
   let freeze = null
@@ -165,6 +193,9 @@ function main() {
       return EXIT.FAIL
     }
   }
+
+  const tcbFiles = currentTcbDigests()
+  const tcb = { version: TCB_VERSION, digest: tcbDigest(tcbFiles), files: tcbFiles, checked: freeze?.tcb?.git_checked === true, external: freeze?.tcb?.external ?? null }
 
   const candidate = opts.candidate || gitRevision(root, 'HEAD')
   // `none` is how a workflow spells "this is the first Baseline". Normalise it here so
@@ -180,7 +211,7 @@ function main() {
   const runId = opts['run-id'] || (hostMode ? `host-${Date.now().toString(36)}-${runToken.slice(0, 8)}` : (opts['ci-run-id'] || process.env.DSH_CI_RUN_ID))
   const context = {
     root, cfg, model, verifier, candidate, parentBaseline, sliceId, acceptance, spine, opts,
-    expectedCaseIds, resultPath, runToken, runId, hostMode, verification, freeze,
+    expectedCaseIds, resultPath, runToken, runId, hostMode, verification, freeze, tcb,
     startedAt: new Date().toISOString(),
     gateLogs: [],
     spineBefore: [...spine.caseIds],
@@ -320,6 +351,23 @@ function main() {
       evidence.execution.result = 'FAIL'
       code = EXIT.FAIL
     }
+    // What this record can actually claim to have observed, derived from the backend
+    // that produced it and the record's own statements — never from a declared intent.
+    // A required observable this backend cannot back with this record is a blocking
+    // reason with a stable code, not a note.
+    const capability = assessBackendCapability(model, evidence)
+    evidence.capability = capability
+    if (!capability.ok) {
+      blocking.push({
+        code: capability.code,
+        message: capabilityMessage(capability),
+        backend: capability.backend,
+        required_observables: capability.required_observables,
+        missing_observables: capability.missing_observables,
+      })
+      evidence.execution.result = 'FAIL'
+      code = EXIT.FAIL
+    }
     if (opts['mvp-ready']) {
       const receipt = opts['release-receipt'] ? JSON.parse(readFileSync(abs(root, opts['release-receipt']), 'utf8')) : null
       const readiness = assessMvpReady(model, evidence, receipt, { candidate, parentBaseline, trustedIssuer: issuer })
@@ -378,9 +426,13 @@ function main() {
     `cases: ${caseAccounting.executed}/${caseAccounting.required} required executed, ` +
       `${caseAccounting.passed} passed, ${caseAccounting.failed} failed, ${caseAccounting.skipped} skipped`,
   )
-  for (const problem of [...structuralFailures, ...caseFailures]) {
+  for (const problem of [...structuralFailures, ...caseFailures, ...blocking.filter(entry => entry.code === 'BACKEND_CAPABILITY_INSUFFICIENT')]) {
     human.push(`BLOCK ${problem.code}: ${problem.message}`)
   }
+  human.push('')
+  const capabilitySummary = requiredObservables(model, { gates: verifier.gates })
+  human.push(`observables : required [${capabilitySummary.join(', ') || '-'}] for backend ${backend || '(local diagnostic)'}`)
+  human.push(`verifier TCB: v${tcb.version} ${String(tcb.digest).slice(0, 12)} (${Object.keys(tcb.files).length} file(s)${tcb.checked ? '; anchored to the frozen revision' : tcb.external === true ? '; outside this candidate repository' : ''})`)
   human.push('')
   human.push(
     opts['write-evidence']
@@ -414,6 +466,15 @@ function main() {
       cases: caseAccounting,
       structural,
       blocking,
+      capability:
+        evidence?.capability ||
+        (backend
+          ? // No record was written (a local diagnostic, or a run that never got that far).
+            // Report what the selected backend *could* observe, so the machine-readable
+            // block is never an empty list sitting next to a non-empty requirement.
+            assessPlannedCapability(model, { backend, gates: verifier.gates })
+          : null),
+      tcb: { version: tcb.version, digest: tcb.digest, git_checked: tcb.checked === true, external: tcb.external ?? null, files: Object.keys(tcb.files) },
       evidence_path: evidencePath,
       evidence_id: evidence?.evidence_id || null,
       ...(hostMode
@@ -577,15 +638,20 @@ function runGate(gateName, definition, context) {
   }
 
   const started = Date.now()
-  const env = {
-    ...process.env,
-    DSH_GATE: gateName,
-    DSH_CANDIDATE: context.candidate || '',
-    ...(definition.env || {}),
-    DSH_PARENT_BASELINE: context.parentBaseline || '',
-    DSH_VERIFICATION_RUN_TOKEN: context.runToken,
-    DSH_REQUIRED_CASE_IDS: JSON.stringify(context.expectedCaseIds),
-  }
+  // The gate subprocess gets an *explicitly constructed* environment: the minimal
+  // platform base plus the variables this gate declares in the frozen verifier
+  // configuration plus the verifier inputs below. It does not inherit the verifier
+  // process's environment, which is what used to hand a Host-backend run the
+  // `DSH_CI_ISSUER` / deployment identity of the CI job it happened to run inside.
+  const env = gateEnv(definition.env, {
+    extra: {
+      DSH_GATE: gateName,
+      DSH_CANDIDATE: context.candidate || '',
+      DSH_PARENT_BASELINE: context.parentBaseline || '',
+      DSH_VERIFICATION_RUN_TOKEN: context.runToken,
+      DSH_REQUIRED_CASE_IDS: JSON.stringify(context.expectedCaseIds),
+    },
+  })
   const shell = process.platform === 'win32' ? 'powershell.exe' : 'sh'
   const shellArgs = process.platform === 'win32' ? ['-NoProfile', '-Command', command] : ['-c', command]
   const result = spawnSync(shell, shellArgs, {
@@ -846,6 +912,16 @@ export function buildEvidence(context, { gateResults, caseAccounting, issuer, st
     structural_notes: structural.map((s) => `${s.level}:${s.code}:${s.message}`),
     spine_manifest_digest: bindings.spine_manifest_digest,
     spine_case_ids: spine.caseIds,
+    // Which verifier TCB produced this record. The trusted-CI backend stages
+    // `packages/` and `plugins/` from canonical rather than from the candidate
+    // (ci/tools/ci-stage.mjs), so this is an audit binding rather than the drift
+    // guard the host backend uses.
+    standards: {
+      tcb_version: context.tcb?.version ?? null,
+      tcb_digest: context.tcb?.digest ?? null,
+      tcb_files: context.tcb?.files ?? null,
+      tcb_git_checked: context.tcb?.checked === true,
+    },
   }
 }
 
@@ -932,29 +1008,55 @@ export function writeHostArtifacts(context, { gateResults, caseAccounting, spine
 /**
  * Grow the accumulated Spine with the cases this candidate really passed.
  *
- * The Spine only ever grows: a case that was in it and did not pass blocks the run
- * instead of being dropped. The pre-growth Spine is kept in the record, so the record
- * that caused the growth is not judged stale by its own effect.
+ * The Spine only ever grows — `new_spine = old_spine ∪ verified_cases` — and there
+ * is no flag, argument or configuration that can suppress it: a PASS that did not
+ * leave the Spine holding at least every case it just verified is a *verifier
+ * error*, not a warning. A case that was in the Spine and did not pass blocks the
+ * run instead of being dropped, so the union is the only transition allowed. The
+ * pre-growth Spine is kept in the record, so the record that caused the growth is
+ * not judged stale by its own effect.
  */
 export function accumulateSpine(context, { caseAccounting }) {
-  const { root, cfg, opts, runId } = context
+  const { root, cfg, runId } = context
   const before = [...context.spineBefore]
-  if (opts['no-spine-accumulate']) return { ok: true, skipped: true, added: [], before, after: before }
   const verified = caseAccounting.results.filter((entry) => entry.outcome === 'passed').map((entry) => entry.case_id)
   const missing = before.filter((id) => !verified.includes(id))
   if (missing.length > 0) {
     return { ok: false, problem: `the accumulated Spine case(s) ${missing.join(', ')} did not pass; the Spine only grows and this run lost coverage` }
   }
   const after = [...new Set([...before, ...verified])].sort()
-  if (after.length === before.length) return { ok: true, added: [], before, after }
   const spinePath = abs(root, cfg.paths.spineManifest)
-  mkdirSync(dirname(spinePath), { recursive: true })
-  writeFileSync(
-    spinePath,
-    `last_updated: ${JSON.stringify(new Date().toISOString())}\nupdated_by: ${JSON.stringify(runId)}\ncase_ids: ${JSON.stringify(after)}\n`,
-    'utf8',
-  )
-  return { ok: true, added: after.filter((id) => !before.includes(id)), before, after, path: rel(root, spinePath) }
+  if (after.length > before.length) {
+    try {
+      mkdirSync(dirname(spinePath), { recursive: true })
+      writeFileSync(
+        spinePath,
+        `last_updated: ${JSON.stringify(new Date().toISOString())}\nupdated_by: ${JSON.stringify(runId)}\ncase_ids: ${JSON.stringify(after)}\n`,
+        'utf8',
+      )
+    } catch (error) {
+      return { ok: false, problem: `the regression Spine could not be written at ${rel(root, spinePath)}: ${error?.message || error}`, before, after }
+    }
+  }
+  // Post-condition: the Spine on disk must hold every case this run verified. A write
+  // that silently did not happen (a read-only tree, a wrong path, another writer) is a
+  // verifier error, and the run must not be reported as a PASS that grew nothing.
+  // Extra entries on disk are deliberately not an error: they can only come from another
+  // legitimate run appending to the same union, and they never remove coverage.
+  const onDisk = loadSpine(root, cfg).caseIds
+  const missingOnDisk = after.filter((id) => !onDisk.includes(id))
+  if (missingOnDisk.length > 0) {
+    return {
+      ok: false,
+      problem:
+        `the regression Spine at ${rel(root, abs(root, cfg.paths.spineManifest))} does not hold the verified case(s) ` +
+        `${missingOnDisk.join(', ')} after accumulation; a PASS must leave the Spine grown`,
+      before,
+      after,
+      onDisk,
+    }
+  }
+  return { ok: true, added: after.filter((id) => !before.includes(id)), before, after, path: rel(root, abs(root, cfg.paths.spineManifest)) }
 }
 
 /**
@@ -1114,6 +1216,13 @@ export function buildHostEvidence(context, { gateResults, caseAccounting, issuer
       committed_verified: freeze?.committed_verified === true,
       drift: freeze?.drift || [],
       protected_files: Object.keys(freeze?.record?.files || {}).length,
+      // The verifier Trusted Computing Base this record was produced by. Recorded so a
+      // later reader can see which deciding logic stood behind the verdict, and so a
+      // TCB that no longer matches is visible instead of implied.
+      tcb_version: context.tcb?.version ?? null,
+      tcb_digest: context.tcb?.digest ?? null,
+      tcb_files: context.tcb?.files ?? null,
+      tcb_git_checked: context.tcb?.checked === true,
     },
     issuer: { identity: issuer },
     structural_notes: structural.map((s) => `${s.level}:${s.code}:${s.message}`),

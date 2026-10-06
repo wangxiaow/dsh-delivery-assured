@@ -17,6 +17,9 @@ import { buildGuard } from './guard.js'
 import { BOOTSTRAP_PHASE, bootstrapNextActions, bootstrapSummary } from './bootstrap.js'
 import { createKernel } from './kernel.js'
 import { SKILL_DESCRIPTION, SKILL_MARKDOWN, SKILL_NAME, SKILL_WHEN_TO_USE } from './skill.js'
+// The parameter schemas live in one pure module so "which switches a session can
+// reach" is a fact a test can assert without a hosting runtime (see tool-surface.js).
+import { TOOL_PARAMETERS } from './tool-surface.js'
 
 export const name = 'delivery-assured'
 
@@ -142,23 +145,7 @@ export function apply(ctx, config = {}) {
       description:
         'Check the delivery Contract for structural gaps at one phase. Reports checklist items without a disposition, unmapped obligations, unresolved unknowns, Critical rules without derived negative acceptance, and placeholder text still left in the Contract. Read-only: it reports "not filled", "not mapped" or "not executed"; it cannot tell whether a requirement was never thought of. ' +
         AUTHORITY_NOTE,
-      parameters: {
-        phase: {
-          type: 'string',
-          description:
-            'contract: after drafting the Contract, before tests exist. acceptance: after the independent Acceptance session wrote cases. slice: before entering verification for one Slice. mvp: before claiming the whole product is done.',
-          enum: ['contract', 'acceptance', 'slice', 'mvp'],
-          required: true,
-        },
-        slice: {
-          type: 'string',
-          description: 'Slice id, required for the slice phase so future Slices are not reported as current gaps.',
-        },
-        strict: {
-          type: 'boolean',
-          description: 'Treat warnings as blocking too.',
-        },
-      },
+      parameters: TOOL_PARAMETERS.delivery_gaps,
       output: { schema: { type: 'object', additionalProperties: true }, render: (args, value) => renderResult(value) },
       async execute(args, exec) {
         const ready = requireReady(exec)
@@ -184,19 +171,7 @@ export function apply(ctx, config = {}) {
       description:
         'Recompute the obligation to Slice to Acceptance to evidence mapping from the Contract, the frozen acceptance manifest and CI records. Never consults a task list or a DONE marker. Use view=mvp to ask whether the whole Contract is closed, or view=slice for what the current Slice plus the accumulated Spine must prove now. ' +
         AUTHORITY_NOTE,
-      parameters: {
-        view: {
-          type: 'string',
-          description: 'mvp closes over the whole Contract; slice covers the current Slice and the existing Spine.',
-          enum: ['mvp', 'slice'],
-          required: true,
-        },
-        slice: { type: 'string', description: 'Slice id to report on when view is slice.' },
-        candidate: {
-          type: 'string',
-          description: 'Candidate revision to judge evidence against. Defaults to the current HEAD.',
-        },
-      },
+      parameters: TOOL_PARAMETERS.delivery_coverage,
       output: { schema: { type: 'object', additionalProperties: true }, render: (args, value) => renderResult(value) },
       async execute(args, exec) {
         const ready = requireReady(exec)
@@ -209,7 +184,7 @@ export function apply(ctx, config = {}) {
         const result = await runScript(ready.ctx, ctx.shell, 'coverage.mjs', argv)
         return {
           ...summarize(result, {
-            keep: ['view', 'candidate', 'durable_state', 'state_authority', 'state_degraded', 'state_degraded_reason', 'buckets', 'gap_classes', 'blocking', 'critical_violations'],
+            keep: ['view', 'candidate', 'durable_state', 'state_authority', 'state_degraded', 'state_degraded_reason', 'buckets', 'gap_classes', 'blocking', 'blocking_entries', 'critical_violations'],
           }),
           project: ready.ctx.project.root,
         }
@@ -223,12 +198,7 @@ export function apply(ctx, config = {}) {
       description:
         'Rebuild the trustworthy starting point after a session change, a gap or a machine change: protected references, the durable Baseline and CI evidence, recomputed Coverage, the untouched local candidate diff, remaining budget, blockers and the next verification step. It reads `refs/heads/delivery-state/main` read-only (Baseline metadata, Evidence, the attempt ledger and the accumulated Spine live there, not in the working tree) and writes nothing; `offline: true` skips that read and says so. Run this first when resuming work. ' +
         AUTHORITY_NOTE,
-      parameters: {
-        offline: {
-          type: 'boolean',
-          description: 'Skip reading remote protected references and say so, instead of failing.',
-        },
-      },
+      parameters: TOOL_PARAMETERS.delivery_resume,
       output: { schema: { type: 'object', additionalProperties: true }, render: (args, value) => renderResult(value) },
       async execute(args, exec) {
         const ready = requireReady(exec)
@@ -256,9 +226,7 @@ export function apply(ctx, config = {}) {
       description:
         'Report the attempt budget for a Slice: attempts and replans against their limits, progress on the same standard and case set, oscillation detection, and whether a Replan is required or the budget is exhausted. Counting continues across sessions; changing session or renaming a Slice does not reset it. ' +
         AUTHORITY_NOTE,
-      parameters: {
-        slice: { type: 'string', description: 'Limit the report to one Slice.' },
-      },
+      parameters: TOOL_PARAMETERS.delivery_attempts,
       output: { schema: { type: 'object', additionalProperties: true }, render: (args, value) => renderResult(value) },
       async execute(args, exec) {
         const ready = requireReady(exec)
@@ -284,18 +252,7 @@ export function apply(ctx, config = {}) {
       description:
         'Run the 5+1 Gates locally and report the diagnostic result: build, clean boot, persistence/migration, Slice acceptance, regression Spine and deployment. Exit code 0 here means only that these commands passed on this machine — it is not evidence and cannot complete a delivery. Use delivery_verify_independent for the host-executed run that does produce the record. ' +
         AUTHORITY_NOTE,
-      parameters: {
-        slice: { type: 'string', description: 'Slice id being verified.' },
-        candidate: { type: 'string', description: 'Candidate revision to bind the run to. Defaults to HEAD.' },
-        'only-gate': {
-          type: 'array',
-          description: 'Run only these gates.',
-          items: {
-            type: 'string',
-            enum: ['build', 'clean_boot', 'persistence_migration', 'slice_acceptance', 'regression_spine', 'deployment'],
-          },
-        },
-      },
+      parameters: TOOL_PARAMETERS.delivery_verify_local,
       output: { schema: { type: 'object', additionalProperties: true }, render: (args, value) => renderResult(value) },
       async execute(args, exec) {
         const ready = requireReady(exec)
@@ -325,38 +282,25 @@ export function apply(ctx, config = {}) {
     defineTool({
       name: 'delivery_verify_independent',
       description:
-        'Have the DSH host execute the frozen verifier on the current committed candidate and record the result as Evidence: build, clean boot, persistence/migration, the frozen Slice acceptance and the accumulated regression Spine all really run, with the raw output retained next to the record. This is the default way an ordinary project completes; the protected CI workflow, the authority refs and the Baseline stay available as the optional high-assurance backend. A failing run is a diagnostic that names exactly which gate and which Required case failed, so the implementation can be fixed and the run repeated, and a passing run is what makes the delivery Delivered. The frozen standard must be anchored first (freeze_standard: true records it; it must be committed, and it may only be changed with allow_standard_change). A record bound to another revision, a skipped Required case, a modified spec or a hand-written file is not a pass. ' +
+        'Have the DSH host execute the frozen verifier on the current committed candidate and record the result as Evidence: build, clean boot, persistence/migration, the frozen Slice acceptance and the accumulated regression Spine all really run, with the raw output retained next to the record. This is the default way an ordinary project completes; the protected CI workflow, the authority refs and the Baseline stay available as the optional high-assurance backend. A failing run is a diagnostic that names exactly which gate and which Required case failed, so the implementation can be fixed and the run repeated, and a passing run is what makes the delivery Delivered. The frozen standard must be anchored first (freeze_standard: true records it; it must be committed, and it may only be changed with allow_standard_change). A record bound to another revision, a skipped Required case, a modified spec or a hand-written file is not a pass. A PASS always grows the regression Spine with every case it really verified: no argument here suppresses that, and a standard or verifier-TCB drift is refused instead of re-frozen. ' +
         AUTHORITY_NOTE,
-      parameters: {
-        slice: { type: 'string', description: 'Slice id whose frozen Required cases must execute.' },
-        freeze_standard: {
-          type: 'boolean',
-          description:
-            'Record the frozen standard (Contract, project config, acceptance manifest and specs, verifier config, Slices) before running. Use it once, before implementing; afterwards the standard is immutable unless allow_standard_change is given.',
-        },
-        allow_standard_change: {
-          type: 'boolean',
-          description: 'Re-freeze an already frozen standard, recording the previous standard id in the freeze history.',
-        },
-        standard_change_reason: { type: 'string', description: 'Why the frozen standard is being changed (recorded verbatim).' },
-        parent_baseline: { type: 'string', description: 'Baseline id the record must bind as its parent, when there is one.' },
-        hypothesis: { type: 'string', description: 'The falsifiable hypothesis this attempt tests.' },
-        'no-spine-accumulate': { type: 'boolean', description: 'Do not grow the regression Spine even when the run passes.' },
-      },
+      parameters: TOOL_PARAMETERS.delivery_verify_independent,
       output: { schema: { type: 'object', additionalProperties: true }, render: (args, value) => renderResult(value) },
       async execute(args, exec) {
         const ready = requireReady(exec)
         if (!ready.ok) return ready
         const bootstrap = bootstrapAnswer(ready.ctx, 'verify_independent')
         if (bootstrap) return bootstrap
+        // A PASS always grows the regression Spine. There is no argument here that
+        // skips it, and none is forwarded: `new_spine = old_spine ∪ verified_cases`
+        // is the invariant, and a run that cannot prove it is a verifier error.
         const shared = []
         if (args.slice) shared.push('--slice', args.slice)
         if (args.parent_baseline) shared.push('--parent-baseline', args.parent_baseline)
-        if (args['no-spine-accumulate']) shared.push('--no-spine-accumulate')
         if (args.hypothesis) shared.push('--hypothesis', args.hypothesis)
         try {
           if (args.freeze_standard) {
-            const freezeArgs = [...shared.filter((value) => value !== '--no-spine-accumulate')]
+            const freezeArgs = [...shared]
             if (args.allow_standard_change) freezeArgs.push('--allow-standard-change')
             if (args.standard_change_reason) freezeArgs.push('--standard-change-reason', args.standard_change_reason)
             const frozen = await runScript(ready.ctx, ctx.shell, 'verify.mjs', ['--freeze-standard', ...freezeArgs])
@@ -432,24 +376,7 @@ export function apply(ctx, config = {}) {
       name: 'delivery_iteration',
       description:
         'Open, record or read the durable iteration journal (.agent/ITERATIONS.jsonl). This is how a new session recovers the current requirement, what was already done and what blocked, without the user repeating it: action=open with the user requirement verbatim (it needs no existing iteration, so a first requirement or a next round after a delivery opens the same way), note for a decision or progress fact, verified only with an evidence reference actually observed, blocked with the concrete reason, close only when the recomputed delivery verdict is Delivered (a close attempted before that is refused and writes nothing, because a session may not declare its own completion). action=status joins the journal with the recomputed resume summary read from the same authoritative state as delivery_resume. Append-only and non-authoritative: it never writes Evidence and never advances a Baseline.',
-      parameters: {
-        action: {
-          type: 'string',
-          description: 'open: start an iteration from the user requirement. note/verified/blocked: append a fact to the current one. close: append the closed record, only when the recomputed delivery verdict is Delivered. status: read the journal plus the recomputed recovery summary.',
-          enum: ['open', 'note', 'verified', 'blocked', 'close', 'status'],
-          required: true,
-        },
-        requirement: { type: 'string', description: 'The user requirement, verbatim and complete, for action=open.' },
-        detail: { type: 'string', description: 'Short factual note for action=note (decision, observed result, next step).' },
-        evidence_ref: { type: 'string', description: 'The CI run, evidence id or command output actually observed, for action=verified.' },
-        reason: { type: 'string', description: 'The concrete blocking condition, for action=blocked.' },
-        iteration: { type: 'string', description: 'Iteration id such as IT-002; defaults to the current open iteration.' },
-        offline: {
-          type: 'boolean',
-          description:
-            'Skip reading the durable state ref and report the working tree only. The default reads it, so this summary and delivery_resume cannot disagree about the same history.',
-        },
-      },
+      parameters: TOOL_PARAMETERS.delivery_iteration,
       output: { schema: { type: 'object', additionalProperties: true }, render: (args, value) => renderResult(value) },
       async execute(args, exec) {
         const ready = requireReady(exec)
@@ -576,34 +503,7 @@ export function apply(ctx, config = {}) {
       name: 'delivery_ci',
       description:
         'Ask the platform to run one frozen workflow and report what it observed. action=request dispatches verify (with an exact frozen candidate SHA, parent baseline, Slice and falsifiable hypothesis), promote (consuming one exact completed verify run), or the two recovery entries on the same promote workflow: record-attempt (re-run the durable collector for one exact completed verify run) and resolve-diagnostic (append an owner-reviewed retention to one exact retained diagnostic). Each action sends only its own declared inputs. action=observe reads one exact run and its jobs. A request is reported as `requested` only when exactly one new run of that workflow can be attributed to it; otherwise it fails as `ambiguous` rather than naming the newest run, and is never retried blindly. Never given baseline credentials, and a requested or completed run is never reported as a promotion: only the durable collector and the promotion job make a result real.',
-      parameters: {
-        action: {
-          type: 'string',
-          description: 'request: dispatch a workflow. observe: read one exact run.',
-          enum: ['request', 'observe'],
-          required: true,
-        },
-        workflow: {
-          type: 'string',
-          description: 'Which frozen workflow to ask for. record-attempt and resolve-diagnostic are the two recovery entries; resolve-diagnostic needs the reviewed state SHA, a real resolution owner and confirmation reference.',
-          enum: ['verify', 'promote', 'record-attempt', 'resolve-diagnostic'],
-        },
-        candidate: { type: 'string', description: 'Full 40-character commit SHA that was actually frozen, for workflow=verify.' },
-        parent_baseline: { type: 'string', description: 'Expected parent baseline id (BL-003) or none, for workflow=verify.' },
-        slice: { type: 'string', description: 'Approved Slice id from the frozen standards, for workflow=verify.' },
-        hypothesis: { type: 'string', description: 'The falsifiable hypothesis this attempt tests, for workflow=verify.' },
-        comparison_approval_ref: { type: 'string', description: 'Approved standard-comparison record, only when the frozen standard legitimately changed.' },
-        mode: { type: 'string', description: 'Promotion entry, for workflow=promote.', enum: ['promote-baseline', 'MVP_READY'] },
-        expected_parent: { type: 'string', description: 'Expected parent baseline id or none, for workflow=promote.' },
-        verify_run_id: { type: 'string', description: 'Exact completed verify run id a promotion consumes, for workflow=promote, and the source run a record-attempt or resolve-diagnostic recovery consumes.' },
-        verify_run_attempt: { type: 'string', description: 'Exact verify attempt number for the same uses.' },
-        expected_state_sha: { type: 'string', description: 'Exact 40-character delivery-state/main SHA reviewed for the resolution, for workflow=resolve-diagnostic.' },
-        resolution_owner: { type: 'string', description: 'The real reviewing actor approving the counted-failure retention, for workflow=resolve-diagnostic.' },
-        resolution_confirmation: { type: 'string', description: 'The reviewed diagnostic confirmation reference, for workflow=resolve-diagnostic.' },
-        owner_approval_ref: { type: 'string', description: 'Owner confirmation reference, only for a project whose frozen policy is human_review.' },
-        run_id: { type: 'string', description: 'Exact run id to read, for action=observe.' },
-        repository: { type: 'string', description: 'owner/name; defaults to the configured repository or the project remote.' },
-      },
+      parameters: TOOL_PARAMETERS.delivery_ci,
       output: { schema: { type: 'object', additionalProperties: true }, render: (args, value) => renderResult(value) },
       async execute(args, exec) {
         const ready = requireReady(exec)

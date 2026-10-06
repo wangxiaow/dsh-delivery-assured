@@ -75,6 +75,10 @@ deployment:
   mail_channel: "<已确认的投递方式，或 not_applicable>"
   environment_sensitive_paths: ["<回调、provider、部署、迁移配置路径>"]
   environment_limitations: ["<自动验收覆盖不到的部分，例如主观易用性；必须如实声明>"]
+  # 需要"真实部署/隔离/外部 provider 被实际观测到"时在这里**显式声明**：宿主后端看不到
+  # 这些事实，声明之后它就不会产出 Delivered（必须用能观测它们的后端）。只写环境名字
+  # （staging 等）不构成该要求——默认完成路径仍是 DSH/宿主自己执行冻结验收。
+  # required_observables: [production_deployment]
   # 每项前提都要能被机器观测，并声明观测方式；无法观测的前提不会被默认满足。
   release_prerequisites:
     - id: verify-required-checks

@@ -22,6 +22,26 @@ const here = dirname(fileURLToPath(import.meta.url))
 export const PROJECT_ROOT = join(here, '..', '..', '..')
 export const CLI = join(PROJECT_ROOT, 'src', 'cli.mjs')
 
+/**
+ * The shipped operation pack, beside this project rather than inside it. Both the
+ * staged verification tree and a plain checkout put `packages/delivery-assured`
+ * next to `project/`.
+ */
+const PACK_LIB = join(PROJECT_ROOT, '..', 'packages', 'delivery-assured', 'scripts', 'lib')
+
+/**
+ * The environment a fixture subprocess runs with.
+ *
+ * This driver starts the real CLI, so its environment decides what the observation
+ * means. Inheriting `process.env` made that meaning depend on where the suite was
+ * launched: inside a GitHub Actions verification job the ambient environment holds
+ * `DSH_CI_ISSUER`, the deployment identity and the frozen-standard revisions, so a
+ * Host-shaped scenario could silently be given trusted-CI authority. The fixture
+ * therefore builds its environment from an explicit allowlist and adds only what
+ * the scenario it is proving declares.
+ */
+const { buildBaseEnv } = await import(pathToFileURL(join(PACK_LIB, 'env.mjs')).href)
+
 const BASE_PROJECT_YAML = `project:
   id: spec-fixture
   name: acceptance fixture
@@ -307,12 +327,18 @@ function deepMerge(target, patch) {
   return target
 }
 
-/** Run one CLI invocation and return the real process observation. */
-export function runDeliveryRaw(args, { cwd = PROJECT_ROOT, env = {} } = {}) {
+/**
+ * Run one CLI invocation and return the real process observation.
+ *
+ * `env` is the scenario's explicit environment, never a patch on the ambient one:
+ * a Host scenario omits the CI authority variables by construction rather than
+ * deleting them one by one from an inherited environment.
+ */
+export function runDeliveryRaw(args, { cwd = PROJECT_ROOT, env = {}, scenario = null } = {}) {
   const started = Date.now()
   const result = spawnSync(process.execPath, [CLI, ...args], {
     cwd,
-    env: { ...process.env, ...env },
+    env: { ...buildBaseEnv(), ...(scenario || {}), ...env },
     encoding: 'utf8',
   })
   return {
@@ -402,7 +428,6 @@ export function gitRefs(dir) {
  * their *decisions*; nothing here decides pass/fail for them.
  */
 const STAGED_ROOT = join(PROJECT_ROOT, '..')
-const PACK_LIB = join(STAGED_ROOT, 'packages', 'delivery-assured', 'scripts', 'lib')
 const CI_TOOLS = join(STAGED_ROOT, 'ci', 'tools')
 const PLUGIN_LIB = join(STAGED_ROOT, 'plugins', 'dsh-delivery-assured', 'lib')
 

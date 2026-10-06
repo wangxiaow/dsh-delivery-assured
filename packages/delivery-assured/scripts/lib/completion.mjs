@@ -15,6 +15,7 @@
 import { classifyEvidence, isPlaceholder } from './model.mjs'
 import { blockingForView, collectCriticalViolations, coverageRows } from './coverage-core.mjs'
 import { VERIFICATION_BACKEND, issuerAssurance } from './verification.mjs'
+import { assessBackendCapability, capabilityMessage } from './capability.mjs'
 
 export const COMPLETION_MODES = ['independent_auto', 'human_review']
 
@@ -191,28 +192,59 @@ export function independentVerification(model, { candidate, parentBaseline = nul
  *
  * `Delivered` is computed, never declared: it holds only when the Contract's remaining
  * obligations are all proved by a fresh execution of the frozen Required set on this
- * exact candidate, no Critical rule lacks a current pass, and the budget is not
- * exhausted. The backend is named, and the observations that backend could not make
- * (a packaged deployment, runtime isolation) are reported as limitations of the
- * verdict rather than folded into it.
+ * exact candidate, that execution's backend can actually observe every fact the
+ * Contract requires, no Critical rule lacks a current pass, and the budget is not
+ * exhausted. The backend is named, and the observations it could not make are reported
+ * as limitations of the verdict — but for a *Required* observable a missing capability
+ * is a block, never a limitation (see lib/capability.mjs).
  */
 export function assessDelivery(model, { candidate, parentBaseline = null, acceptedIssuers = null, trustedIssuer = null, verification = null, budget = null } = {}) {
   const { buckets } = coverageRows(model, { candidate, parentBaseline, trustedIssuer, acceptedIssuers })
   const critical = collectCriticalViolations(model, { codeRevision: candidate, parentBaseline, trustedIssuer, acceptedIssuers })
   const blockingObligations = blockingForView(buckets, 'mvp')
   const record = independentVerification(model, { candidate, parentBaseline, acceptedIssuers, trustedIssuer, verification })
+  // Evidence covers the Contract's required observability only when the backend that
+  // produced the record can observe every required fact. `not_observed` is never a pass.
+  // The capability verdict is computed from the *raw* record — `independentVerification`
+  // returns a summary that carries it under `record` — because the backend and its own
+  // statements are exactly what the completeness check reads.
+  const evidenceRecord = record?.record ?? null
+  const capability = evidenceRecord ? assessBackendCapability(model, evidenceRecord) : null
   const blocking = []
+  const blockingEntries = []
   if (blockingObligations.length > 0) {
-    blocking.push(`${blockingObligations.length} required obligation(s) are not proved on this candidate: ${blockingObligations.slice(0, 8).join(', ')}`)
+    blockingEntries.push({
+      code: 'REQUIRED_OBLIGATIONS_UNPROVED',
+      message: `${blockingObligations.length} required obligation(s) are not proved on this candidate: ${blockingObligations.slice(0, 8).join(', ')}`,
+      obligations: blockingObligations,
+    })
   }
-  for (const violation of critical) blocking.push(`Critical ${violation.rule}: ${violation.message}`)
+  for (const violation of critical) {
+    blockingEntries.push({ code: 'CRITICAL_WITHOUT_CURRENT_PASS', message: `Critical ${violation.rule}: ${violation.message}`, rule: violation.rule, case_id: violation.case_id ?? null })
+  }
   if (!record) {
-    blocking.push(
-      'no fresh independent execution of the frozen Required set covers this exact candidate; ' +
+    blockingEntries.push({
+      code: 'NO_FRESH_INDEPENDENT_EXECUTION',
+      message:
+        'no fresh independent execution of the frozen Required set covers this exact candidate; ' +
         'a declaration, a local diagnostic or a record bound to another revision is not a pass',
-    )
+    })
   }
-  if (budget?.budget_blocked === true) blocking.push('the attempt budget is exhausted; this needs an explicit budget or scope decision')
+  if (budget?.budget_blocked === true) {
+    blockingEntries.push({ code: 'BUDGET_EXHAUSTED', message: 'the attempt budget is exhausted; this needs an explicit budget or scope decision' })
+  }
+  // Only meaningful once a record exists: without one the verdict is already
+  // NOT_DELIVERED, and the missing execution is the more precise reason.
+  if (capability && !capability.ok) {
+    blockingEntries.push({
+      code: capability.code,
+      message: capabilityMessage(capability),
+      backend: capability.backend,
+      required_observables: capability.required_observables,
+      missing_observables: capability.missing_observables,
+    })
+  }
+  for (const entry of blockingEntries) blocking.push(entry.message)
   const limitations = []
   if (record && record.backend === VERIFICATION_BACKEND.HOST) {
     limitations.push('the record was produced by the host-executed verifier: no packaged deployment or runtime isolation was observed')
@@ -223,12 +255,16 @@ export function assessDelivery(model, { candidate, parentBaseline = null, accept
     backend: record?.backend ?? (verification?.backend ?? null),
     candidate: candidate ?? null,
     verification: record,
+    capability,
+    blocking,
+    // The stable, machine-readable form of the same facts: a consumer may not parse
+    // the human sentence above to find out *which* observable was missing.
+    blocking_entries: blockingEntries,
     owed: {
       blocking_obligations: blockingObligations,
       critical: critical.map((entry) => `${entry.rule}${entry.case_id ? `/${entry.case_id}` : ''}`),
       verified: buckets.verified,
     },
-    blocking,
     limitations,
   }
 }

@@ -1,6 +1,6 @@
 {
   "name": "dsh-delivery-assured",
-  "version": "0.5.1",
+  "version": "0.5.2",
   "description": "DSH plugin for the Delivery-Assured Progressive SE operation pack: read-only delivery status, coverage, resume, budget and local verification for a DSH session. Install it straight from this repository's URL.",
   "type": "module",
   "license": "MIT",

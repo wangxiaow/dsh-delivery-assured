@@ -95,6 +95,10 @@ const pluginTests = [
   { label: 'host helper resolution', file: join(pluginRoot, 'test', 'host-resolution.test.mjs'), requires: 'dsh-runtime' },
   { label: 'One-command install', file: join(repoRoot, 'tools', 'install-plugin.test.mjs'), requires: 'none' },
   { label: 'plugin automation interfaces', file: join(pluginRoot, 'test', 'automation.test.mjs'), requires: 'none' },
+  // The parameter schemas DSH projects to the provider cannot be checked by a suite
+  // that needs a hosting runtime, and this is the surface where an escape hatch from
+  // the delivery verdict would appear: audit it as data, on every build.
+  { label: 'Agent-facing tool surface', file: join(pluginRoot, 'test', 'agent-surface.test.mjs'), requires: 'none' },
   // Automatic completion is a delivery rule, so its regressions run in the build gate:
   // the finalizer, the platform release observations and the MVP receipt must all be
   // executed before a Candidate is ever called verified.
@@ -166,7 +170,12 @@ if (!existsSync(pluginRoot)) {
   }
 }
 
-for (const file of ['evidence.test.mjs', 'verification.test.mjs', 'convergence.test.mjs', 'completion.test.mjs', 'durable-state.test.mjs', 'durable-transport.test.mjs', 'state-view.test.mjs', 'capture-run.test.mjs', 'host-verification.test.mjs']) {
+for (const file of ['evidence.test.mjs', 'verification.test.mjs', 'convergence.test.mjs', 'completion.test.mjs', 'durable-state.test.mjs', 'durable-transport.test.mjs', 'state-view.test.mjs', 'capture-run.test.mjs', 'host-verification.test.mjs',
+  // The four invariants that keep a false-positive Delivered hard to produce: the
+  // regression Spine can only grow, subprocess environments are constructed instead
+  // of inherited, a backend that cannot observe a Required fact cannot deliver, and
+  // the logic that decides Delivered is a finite frozen TCB.
+  'spine-accumulation.test.mjs', 'env-construction.test.mjs', 'backend-capability.test.mjs', 'frozen-tcb.test.mjs']) {
   const result = spawnSync(process.execPath, [join(packRoot, 'tests', file)], { cwd: root, encoding: 'utf8' })
   if (result.status !== 0) failures.push(`${file} failed: ${failureDetail(result)}`)
 }

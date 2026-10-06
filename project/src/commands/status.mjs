@@ -103,6 +103,8 @@ export async function statusCommand(opts) {
       completion_mode: delivery.completion_mode,
       backend: delivery.backend,
       blocking: delivery.blocking,
+      blocking_entries: delivery.blocking_entries,
+      capability: delivery.capability,
       limitations: delivery.limitations,
       verification: delivery.verification
         ? {

@@ -626,3 +626,148 @@ IT-002、IT-003（真实会话遇到 porcelain 缺陷时如实记下的 FAIL 与
    文档（`external/_run/bootstrap-e2e-pre-fix-archive/README.md` 与迭代日志的 IT-003 备注）逐条说明原因，
    原字节全部保留。之所以必须这样做：其中一条记录写着「Spine 从 24 掉到 0」（由 `git stash` 绕过造成），
    只要它还参与预算，本项目就会在**没有任何真实失败**的情况下永久阻塞。
+
+## 本轮：四个 false-positive Delivered 的封堵（2026-10-06）
+
+范围只有四项，都是「让 Delivered 的假阳性更难发生、同时把信任边界缩小」：
+**（1）删除 Agent-facing 的 `no-spine-accumulate`；（2）验证/测试子进程环境改为 allowlist 构造；
+（3）backend capability completeness；（4）有限的 Frozen TCB。** 发布版本升到 **0.5.2**
+（[根 package.json](package.json) 与[插件 package.json](plugins/dsh-delivery-assured/package.json)；
+`project/package.json` 是被交付的示例 CLI，版本独立，未改）。
+没有做 Lite Profile、没有重写 Contract schema、没有重写 `verify.mjs`、没有引入 Docker/容器运行时、
+没有实现完整 sandbox 或远程 attestation、没有重新设计 Baseline promotion、没有大规模改名、没有 UI、
+没有新增与 Delivered 无关的 workflow，也没有顺手清理无关代码。没有提交、推送、跑真实 CI 或晋升 Baseline。
+
+### 1. Spine 只能增长，且没有任何 Agent-facing 开关能关掉它
+
+- [host.js](plugins/dsh-delivery-assured/lib/host.js) 不再接受/转发 `no-spine-accumulate`；
+  [verify.mjs](packages/delivery-assured/scripts/verify.mjs) 的 CLI 选项表删掉该开关，
+  传入即 `unknown option --no-spine-accumulate`（退出码 2，不写任何字节，不消耗 attempt）。
+- 所有 Agent-facing 参数 schema 集中到 [tool-surface.js](plugins/dsh-delivery-assured/lib/tool-surface.js)：
+  8 个工具的 parameters 由 `host.js` 引用同一份数据，因此"会话能碰到哪些开关"变成一个不需要宿主运行时
+  就能断言的**数据事实**（[agent-surface.test.mjs](plugins/dsh-delivery-assured/test/agent-surface.test.mjs)，
+  含"种一个 `no-spine-accumulate` 必须被查到"的反向控制）。
+- `accumulateSpine` 现在只允许 `new_spine = old_spine ∪ verified_cases`：已累积 case 未通过 → 阻塞；
+  写入失败或**写完之后 Spine 里没有这些 case** → `SPINE_NOT_ACCUMULATED`，是 verifier error 而不是 warning。
+- 回归：[spine-accumulation.test.mjs](packages/delivery-assured/tests/spine-accumulation.test.mjs) 7/7
+  （开关删除、PASS 精确增长、**上一轮 Spine case 即使已不在当前 Slice 也必须重跑**、FAIL 不增长、
+  单调性、未增长即报错、CLI 无 spine 选项）。
+
+### 2. 验证/测试子进程环境：allowlist，而不是"删掉那个变量"
+
+- 新增 [env.mjs](packages/delivery-assured/scripts/lib/env.mjs)：`SAFE_BASE_ENV_KEYS` 是**白名单**
+  （PATH/HOME/USERPROFILE/SystemRoot/TEMP/TMPDIR/PATHEXT/ComSpec/PSModulePath/LANG/…），
+  刻意不含任何 `DSH_*`、`GITHUB_*`、`GH_*`、`CI`、token 或 `NODE_OPTIONS`。
+- [verify.mjs](packages/delivery-assured/scripts/verify.mjs) 的 gate 子进程不再 `{...process.env, ...}`，
+  而是 `SAFE_BASE_ENV + 运行器的非授权信号（GITHUB_ACTIONS/CI，只影响 skip 注解）+ 冻结 verifier 配置里
+  `env:` 显式声明的变量 + 验证器自己的输入（DSH_GATE/DSH_CANDIDATE/DSH_PARENT_BASELINE/
+  DSH_VERIFICATION_RUN_TOKEN/DSH_REQUIRED_CASE_IDS）`。`env:` 里写成 `$NAME` 才转发验证进程的同名变量，
+  因此**"gate 能看到哪些环境变量"本身是冻结标准的一部分**，Candidate 无法扩大。
+- [project/ci/verifier.yaml](project/ci/verifier.yaml) 显式声明每个 gate 需要的转发：
+  `build` 需要 `DSH_HOME`/`DSH_PROFILE_DIR`/`DSH_DELIVERY_DSH_TOOLS_DIR`（插件套件要定位宿主运行时），
+  `regression_spine` 需要 `DSH_PARENT_SPINE`（父 Baseline 的 Spine 文件），deployment 需要它那六个部署身份
+  输入。"整包继承"以前掩盖了这些真实依赖——不显式声明就会出现"gate 悄悄降级"。
+- [acceptance driver](project/tests/acceptance/driver/index.mjs) 与被观测的 CLI 子进程同样改为
+  `buildBaseEnv() + 场景显式变量`；[host-verification.test.mjs](packages/delivery-assured/tests/host-verification.test.mjs)
+  自己的 fixture 也走同一构造。
+- 回归：[env-construction.test.mjs](packages/delivery-assured/tests/env-construction.test.mjs) 8/8。
+  其中集成项让父进程带满 `DSH_CI_ISSUER`/`DSH_STANDARD_REVISION`/`DSH_IMAGE_DIGEST`/`DSH_DEPLOYMENT_ID`
+  （并在 fixture 里放了一个"记录自己实际看到的环境"的 gate），断言：gate 进程里这些值全为 null、
+  只出现被声明的 `DSH_*`、`DSH_CI_ISSUER` 没有泄漏；同时断言**声明过的转发确实到达**、
+  显式注入 issuer 的 trusted-CI fixture 仍走 CI 通路、最小基础环境仍能真实执行全部 gate。
+
+### 3. backend 看不到 Required observable → 不得 Delivered
+
+- 新增 [capability.mjs](packages/delivery-assured/scripts/lib/capability.mjs)：显式的
+  `required_observables`（来自 Contract 与冻结 verifier 声明的门）与
+  `backend_observable_capabilities`（后端表 ∩ 记录自己的观测声明），要求
+  `required_observables ⊆ backend_observable_capabilities`，否则理由码
+  `BACKEND_CAPABILITY_INSUFFICIENT` + `backend` + `missing_observables`。
+- required 集合**只由 Contract 显式要求决定**：`deployment.required_observables` 里点名，
+  或列出平台可观测的 `release_prerequisites` **且**项目声明了 `verification.backend: trusted_ci`（或 `both`）。
+  只写环境名字（`staging`、`production_like_container`）**不构成**该要求，verifier 里有个 `deployment` 门也不构成。
+  这不是放宽：出厂 [Contract 模板](packages/delivery-assured/templates/CONTRACT.yaml) 自己就写着"只有声明
+  trusted_ci 才要求平台观测"，而按环境名字推导会让每个模板派生项目都无法使用文档里的默认宿主后端
+  （"不要强迫所有项目都使用最强 backend"）。反过来，一旦 Contract 显式要求，宿主后端会在**任何门执行之前**
+  以退出码 2 拒绝（不消耗 attempt、不留记录）；模板里也补了一行注释说明这个开关。
+- [completion.mjs](packages/delivery-assured/scripts/lib/completion.mjs) 的 `assessDelivery` 把能力不足
+  变成**阻塞条目**（`blocking_entries`，机器可读），不是 limitation；`resume`/`status` 同样输出。
+  这里同时修掉一个真实缺陷：能力判定原先拿的是 `independentVerification` 的**摘要对象**而不是原始记录，
+  于是后端被误判成 `trusted_ci`——新回归第一时间抓到了它。
+- [evidence.mjs](packages/delivery-assured/scripts/lib/evidence.mjs) 增加一条正面要求：host 记录不得把
+  deployment 门报成 passed（宿主就地执行，没有可观测的安装产物）；`runtime_isolation`/`container_isolation`/
+  `external_provider` 两个后端都没有能力，Contract 一旦要求即 BLOCKED。
+- 回归：[backend-capability.test.mjs](packages/delivery-assured/tests/backend-capability.test.mjs) 8/8
+  （Host-only Contract 仍 Delivered；环境名字不产生要求；显式 required deployment → 退出码 2 且未 Delivered；
+  trusted_ci 绑定部署即通过、未绑定即缺能力；optional 缺失不阻塞；`not_observed` 必须阻塞；
+  限制不得被降级成 warning 后仍 Delivered）。
+
+### 4. 有限的 Frozen TCB
+
+- 新增 [tcb.mjs](packages/delivery-assured/scripts/lib/tcb.mjs)：`TCB_FILES` 22 个决定判定（或判定所依赖事实）
+  的模块——Contract 解析（`yaml.mjs`）、Required 推导、证据校验、Delivered 判定、覆盖计算、backend 能力、
+  预算/Replan（`convergence.mjs`）、MVP 判定（`mvp.mjs`）、冻结校验、后端策略、状态来源与传输
+  （`state-view.mjs`/`durable-state.mjs`/`gh-api.mjs`/`worktree-git.mjs`）、子进程环境构造、会话侧恢复入口
+  （`resume.mjs`）、verifier 启动器与 agent 参数面（`host.js`/`tool-surface.js`），以及检查器自己（`tcb.mjs`）。
+  `tcb_version` 升到 **2**（集合变化必须升版本，否则新成员或版本差异不会被判成漂移）。
+- 验证前重算：漂移 → `TCB_DRIFT`，版本不符 → `TCB_VERSION_MISMATCH`，记录自相矛盾 → `TCB_RECORD_TAMPERED`，
+  旧记录没有 TCB 字段 → `TCB_NOT_RECORDED`；全部在**任何门之前**拒绝，`resume` 也重算同一次检查。
+- TCB 在候选仓库内时另做一次 **frozen revision 的 Git blob 比对**，所以"改 TCB 成员、只把
+  `FREEZE.json` 里的 `tcb_files`/`tcb_digest` 改成一致"仍然 `TCB_DRIFT`（blob 从对象库读，不从 JSON 读）；
+  TCB 在候选仓库外时如实报 `external: true`（那份操作包不属于候选 revision，Candidate 无法改它，
+  摘要防的是就地升级）。
+- 重冻结一个**变了的** TCB 需要显式授权（[tcbChangeAuthorization](packages/delivery-assured/scripts/lib/tcb.mjs)）；
+  CLI 上有 `--allow-tcb-change`，但它**不出现在任何 Agent-facing schema 里**。文档同时写明它是**可审计性**
+  控制而不是安全边界（会话有 shell）。
+- 流程写进 [docs/TCB.md](docs/TCB.md)：独立改动 → 旧 TCB 下的测试与 owner review → 受保护主干 →
+  成为下一轮 TCB；不做验证器递归、不做远程 attestation、不新增状态层。
+- 回归：[frozen-tcb.test.mjs](packages/delivery-assured/tests/frozen-tcb.test.mjs) 13/13
+  （普通业务代码修改允许、frozen standard 修改仍 `STANDARD_DRIFT`、TCB 修改被拒、
+  **只改摘要文件不能解除漂移**、移除锚定字段被拒、外部 TCB 如实标注、控制平面授权、合法重冻结仍可用、
+  未声明选项被拒、TCB 清单有限且覆盖全部判定模块，以及**两条残余被显式固定为已知限制**：
+  同时改写 `frozen_revision`、以及改写检查器自己——它们不是保护，测试断言其存在以免被误读为已解决）。
+
+### 5. 实证
+
+| 验证 | 结果 |
+|---|---|
+| build gate（`node project/scripts/verify-build.mjs`） | **exit 0**，无 skip note；新增 4 个 pack 套件 + 1 个 plugin 套件 |
+| 本地 verify（S1，`verify.mjs --project project --local --slice S1`） | **exit 0**：build/clean_boot/slice_acceptance/regression_spine 通过，8/8 Required 实际执行；TCB v2 22 个文件 |
+| [spine-accumulation](packages/delivery-assured/tests/spine-accumulation.test.mjs) | 7/7 |
+| [env-construction](packages/delivery-assured/tests/env-construction.test.mjs) | 8/8 |
+| [backend-capability](packages/delivery-assured/tests/backend-capability.test.mjs) | 8/8 |
+| [frozen-tcb](packages/delivery-assured/tests/frozen-tcb.test.mjs) | 13/13 |
+| [agent-surface](plugins/dsh-delivery-assured/test/agent-surface.test.mjs) | 18 checks |
+| [host-verification](packages/delivery-assured/tests/host-verification.test.mjs) | 14/14（未退化；fixture 环境改为构造） |
+| evidence / verification / convergence / completion / durable-state / durable-transport / state-view / capture-run / yaml / templates | 全部通过（未退化） |
+| plugin smoke / automation / bootstrap-lifecycle / install-plugin / host-resolution / compatibility / trust-boundary / skill-registry | 全部通过 |
+| project acceptance（`node project/tests/harness/run.mjs` + `verify-acceptance-accounting.mjs`） | 11 required case 实际执行并通过 |
+
+### 6. 本轮明确没有做 / 仍未解决
+
+1. **TCB 的两条残余是刻意的、且被测试固定，不是"已解决"。** 锚点 `frozen_revision` 与冻结记录同属一个
+   Candidate 可写的文件，所以"改 TCB → 提交 → 把 `tcb_files`/`tcb_digest`/`frozen_revision` 一起指向该提交"
+   在纯本地无法区分；把 `tcb.mjs` 改成"永远返回 ok"同样无法被自己发现。真正的封堵在外部：
+   CI 后端从 canonical 取 `packages/`/`plugins/`、受保护引用禁止改写历史、verifier 升级是独立维护流程。
+   `frozen-tcb.test.mjs` 把这两条写成**断言其存在的**用例（`DOCUMENTED RESIDUAL`），避免文档把它们说成保护。
+2. **backend 那一行是"记录自报"的。** `observedCapabilities` 按记录声明的 `environment.kind` 选后端行；
+   一个手写的 `production_like_ci` 记录仍要有一个**本项目接受**的 issuer 才会被选中，而没声明 trusted_ci
+   的项目不接受该 issuer。这是本轮之前就有的信任模型（"issuer 字符串不是认证，平台回执由 CI 消费者核验"），
+   本轮只是让它的后果多了一个：伪造的 CI 记录也会被算作"能观测部署"。真正的封堵需要远程 attestation，
+   本轮明确不做。已写进 capability 模块与 AUTO_DELIVERY 的限制说明。
+3. **其余测试 fixture 仍继承 `process.env`。** 交付判定相关的 fixture（verifier gate 环境、acceptance driver、
+   host-verification / capability / spine / tcb 套件）都已改成显式构造；但插件与工具库里那些**单元级**
+   替身（`smoke.mjs`、`compatibility.test.mjs`、`host-resolution.test.mjs`、`verification.test.mjs`、
+   `state-view.test.mjs`、`durable-*.test.mjs`）仍在用 `{...process.env, ...}`，它们不构造交付判定、
+   也不依赖环境赋予的权威。全面替换属于下一轮，本轮不扩大改动面。
+4. **backend capability 表是静态的。** `runtime_isolation`/`container_isolation`/`external_provider`
+   两后端都没有实现，Contract 一旦要求即 BLOCKED——刻意的失败关闭，不是"已实现的隔离后端"。
+5. **本轮改动触及 `packages/**` 与 `plugins/**`**，因此按 `ci-stage.mjs` 的规则无法经 PR 集成
+   （与上一轮同一约束）；本轮**未提交、未推送、未跑真实 CI**，也没有新的真实 Evidence/Baseline。
+6. 既有 Evidence/冻结记录会因 `verifier_config_digest`、`tcb_version`/`tcb_digest` 变化而按绑定过期：
+   正确的失败关闭（旧 PASS 不覆盖新标准），需要新的真实执行，不能从旧 PASS 继承；
+   用 TCB v1 冻结的项目需要一次控制平面重冻结（`--allow-tcb-change`）。
+7. 工作树里被 gitignore 的本地状态（`project/ci/evidence/`、`project/.agent/attempts.jsonl` 等）会让
+   `tools/ci-record.test.mjs`、`tools/ci-replan.test.mjs`、`tools/build-gate-absent-plugin.test.mjs`
+   在**本工作树**失败（它们把工作树状态拷进 fixture）；这三个套件不在 build gate 里，
+   在干净检出上 `ci-record` 与 `ci-replan` 通过。本轮未改它们（与本轮四项无关）。

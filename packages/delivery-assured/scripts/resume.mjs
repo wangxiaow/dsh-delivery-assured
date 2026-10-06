@@ -19,6 +19,8 @@ import { coverageRows } from './lib/coverage-core.mjs'
 import { readRemoteRef } from './lib/durable-state.mjs'
 import { STATE_SOURCE, openStateView } from './lib/state-view.mjs'
 import { assessDelivery } from './lib/completion.mjs'
+import { readFreeze } from './lib/standard-freeze.mjs'
+import { verifyTcb } from './lib/tcb.mjs'
 import { backendLabel, resolveVerification } from './lib/verification.mjs'
 
 const TRANSPORTS = ['auto', 'gh', 'git']
@@ -146,6 +148,18 @@ function main() {
   // 6. The delivery verdict. Computed from the evidence that actually exists, never from
   // a declaration: `Delivered` needs the full frozen Required set passing on this exact
   // candidate, from a backend this project accepts.
+  //
+  // 6a. Before the verdict is read, the verifier Trusted Computing Base is re-checked
+  // when a freeze record exists: a Candidate may not edit the logic that decides its own
+  // verdict and then read the verdict it just wrote. This is deliberately a check of the
+  // *worktree* against the frozen manifest, so an uncommitted edit to the verifier is
+  // visible here as blocking rather than as a fresh PASS.
+  let tcb = null
+  const freezeRecord = readFreeze(root, verification)
+  if (freezeRecord) {
+    tcb = verifyTcb(freezeRecord, { projectRoot: root, frozenRevision: freezeRecord.frozen_revision })
+    for (const problem of tcb.problems) blockers.push(`${problem.code}: ${problem.message}`)
+  }
   const delivery = assessDelivery(model, {
     candidate,
     parentBaseline: localBaseline?.baseline_id || null,
@@ -212,6 +226,14 @@ function main() {
   )
   human.push(`verification : ${backendLabel(verification.backend)}${verification.declared ? '' : ' (default; no verification.backend was declared)'}`)
   human.push(
+    `verifier TCB : ${
+      tcb
+        ? `v${tcb.tcb_version} ${String(tcb.recorded_digest).slice(0, 12)} — ${tcb.ok ? 'unchanged since the freeze' : 'DRIFTED from the frozen Trusted Computing Base'}` +
+          ` (${tcb.git_checked ? 'anchored to the frozen revision' : tcb.external === true ? 'outside this repository; compared by digest' : 'digest comparison only'})`
+        : '(no frozen standard recorded; the trusted-CI backend uses the protected acceptance ref instead)'
+    }`,
+  )
+  human.push(
     `delivered    : ${delivery.delivered ? 'yes' : 'no'}` +
       (delivery.verification
         ? ` — ${delivery.verification.evidence_id} (${delivery.verification.backend}, ${delivery.verification.executed_cases}/${delivery.verification.required_cases} cases)`
@@ -274,6 +296,8 @@ function main() {
         backend: delivery.backend,
         candidate: delivery.candidate,
         blocking: delivery.blocking,
+        blocking_entries: delivery.blocking_entries,
+        capability: delivery.capability,
         limitations: delivery.limitations,
         verification: delivery.verification
           ? {
@@ -297,6 +321,16 @@ function main() {
         trusted_ci_configured: verification.trustedCiConfigured,
         problems: verification.problems,
       },
+      verifier_tcb: tcb
+        ? {
+            recorded: tcb.recorded_digest,
+            current: tcb.current_digest,
+            git_checked: tcb.git_checked === true,
+            external: tcb.external ?? null,
+            ok: tcb.ok === true,
+            problems: tcb.problems.map((problem) => problem.code),
+          }
+        : null,
       durable_state: {
         requested: opts['durable-state'] === true,
         available: durable.available === true,
